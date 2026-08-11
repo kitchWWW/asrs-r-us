@@ -26,7 +26,7 @@ final class ProfileStore: ObservableObject {
         static let selected = "selectedProfileID"
         /// Pre-profiles single prompt, migrated into the first profile.
         static let legacyPrompt = "systemPrompt"
-        static let prunedSeeds = "prunedSeedProfiles"
+        static let prunedSeeds = "prunedSeedProfilesV2"
     }
 
     @Published var profiles: [Profile] {
@@ -78,15 +78,21 @@ final class ProfileStore: ObservableObject {
         }
         profiles = prepared
 
+        // Resolve against `prepared`, not `resolved`: pruning may have removed
+        // the profile the saved selection points at.
         let savedID = UserDefaults.standard.string(forKey: Key.selected)
             .flatMap(UUID.init(uuidString:))
-        if let savedID, resolved.contains(where: { $0.id == savedID }) {
+        if let savedID, prepared.contains(where: { $0.id == savedID }) {
             selectedID = savedID
         } else {
-            selectedID = resolved[0].id
+            selectedID = prepared[0].id
         }
 
-        if stored.isEmpty { persistProfiles() }
+        // Always write back. Property observers do not fire during init, so the
+        // `didSet` that normally persists `profiles` never runs here -- without
+        // this, migrations and pruning applied in memory only and were silently
+        // lost on the next launch.
+        persistProfiles()
     }
 
     // MARK: - Mutation
@@ -153,20 +159,32 @@ final class ProfileStore: ObservableObject {
         defaults.set(data, forKey: Key.profiles)
     }
 
-    /// Swaps a superseded base prompt for the current one while preserving
-    /// each profile's own style section and any hand edits below it.
+    /// Brings stored profiles onto the current base prompt while preserving the
+    /// style section each one carries below it.
+    ///
+    /// Matches on the base prompt's closing line rather than on an exact copy of
+    /// a previous version, so prompt fixes reach existing profiles without
+    /// needing every superseded revision kept around forever.
     private static func upgradingLegacyPrompts(in profiles: [Profile]) -> [Profile] {
         profiles.map { profile in
+            guard let marker = profile.prompt.range(of: baseTailMarker) else { return profile }
+            let styleSection = String(profile.prompt[marker.upperBound...])
+            let refreshed = basePrompt + styleSection
+            guard refreshed != profile.prompt else { return profile }
+
             var updated = profile
-            for legacy in legacyBasePrompts where profile.prompt.hasPrefix(legacy) {
-                updated.prompt = basePrompt + String(profile.prompt.dropFirst(legacy.count))
-                break
-            }
+            updated.prompt = refreshed
             return updated
         }
     }
 
     // MARK: - Prompt templates
+
+    /// The rewriting rules every profile starts from. A profile's prompt is
+    /// this plus a style section, and is fully editable afterwards.
+    /// Final line of the base prompt. Used to find where the shared rules end
+    /// and a profile's own style section begins.
+    private static let baseTailMarker = "no quotation marks around the whole thing."
 
     /// The rewriting rules every profile starts from. A profile's prompt is
     /// this plus a style section, and is fully editable afterwards.
@@ -234,6 +252,14 @@ final class ProfileStore: ObservableObject {
     "the comma is in the wrong place" or "she gave a period drama a try", the \
     word is content -- leave it. When in doubt, prefer the literal word, since \
     a stray "period" is easier to spot and fix than a silently deleted one.
+    - Re-punctuate freely. Speech-to-text scatters periods and commas wherever \
+    the speaker drew breath, chopping one thought into fragments and \
+    capitalizing mid-sentence. Join those fragments back into a single clear \
+    sentence, drop the commas that were never meant, and fix the capitalization \
+    left behind by a false period. This is a punctuation change only -- every \
+    word still survives.
+    - Almost never use an ellipsis. Do not write "..." for a pause, a trailing \
+    thought, or an unfinished sentence. End the sentence or let it run.
 
     Leave these alone:
     - Hedges and qualifiers ("I think", "maybe", "sort of", "probably", \
