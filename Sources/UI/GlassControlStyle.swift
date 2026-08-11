@@ -11,6 +11,8 @@ struct GlassControlStyle: ButtonStyle {
     var tinted = false
     @Environment(\.isEnabled) private var isEnabled
 
+    /// One radius for every rounded surface in the panel -- window, text
+    /// panes, buttons and dropdowns -- so nothing reads as a different family.
     static let cornerRadius: CGFloat = 12
     static let height: CGFloat = 26
 

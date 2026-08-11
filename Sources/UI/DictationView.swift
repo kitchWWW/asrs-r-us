@@ -276,14 +276,14 @@ struct DictationView: View {
     }
 
     private var panelShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
+        RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
     }
 
     /// Near-opaque reading surface. Text is the one thing in the window that
     /// should not have to compete with whatever is behind it, so the panes stay
     /// solid while everything around them stays glass.
     private var boxBackground: some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
         return shape
             .fill(Color(nsColor: .textBackgroundColor).opacity(0.93))
             .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
