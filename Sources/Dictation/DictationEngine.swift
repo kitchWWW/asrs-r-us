@@ -59,6 +59,8 @@ final class DictationEngine: ObservableObject {
     private var audioStartedAt: Date?
     private var rebuildCount = 0
     private var lastRebuildAt: Date?
+    /// System default input to put back when the session ends, if we changed it.
+    private var defaultInputToRestore: AudioDeviceID?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
@@ -87,7 +89,7 @@ final class DictationEngine: ObservableObject {
         do {
             try await authorize()
             try await configurePipeline()
-            try startAudio()
+            try await startAudio()
             state = .recording
             log.info("dictation started")
         } catch {
@@ -231,7 +233,7 @@ final class DictationEngine: ObservableObject {
 
     // MARK: - Audio
 
-    private func startAudio() throws {
+    private func startAudio() async throws {
         guard let analyzerFormat, let continuation = inputBuilder else {
             throw DictationError.noCompatibleAudioFormat
         }
@@ -259,11 +261,33 @@ final class DictationEngine: ObservableObject {
         guard input.auAudioUnit.deviceID == device.id else {
             throw DictationError.deviceUnavailable(name: device.name)
         }
+        // Align the system default with the device we are about to record from.
+        // CoreAudio starves a non-default input while a Bluetooth headset holds
+        // the default -- about one buffer per ten seconds, which reads as "the
+        // microphone stopped working" the moment headphones connect. The
+        // previous value is restored when the session ends.
+        if let currentDefault = AudioDevices.defaultInputDeviceID(), currentDefault != device.id {
+            if AudioDevices.setDefaultInputDevice(device.id) {
+                defaultInputToRestore = currentDefault
+                log.info("temporarily set system default input to \(device.name)")
+                // Give CoreAudio a moment to settle before opening the stream.
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+
         activeInputDeviceName = device.name
         boundDeviceID = device.id
         log.info("capturing from \(device.name)")
 
-        let inputFormat = input.outputFormat(forBus: 0)
+        // `inputFormat`, not `outputFormat`. After switching devices the node's
+        // *output* format still describes the previous default device, and
+        // installing a tap with it delivers nothing at all -- measured: with a
+        // 16 kHz device as the system default, outputFormat reported
+        // 44100 Hz / 2 ch and zero buffers arrived, while inputFormat reported
+        // the true 48 kHz / 1 ch and audio flowed. This is what broke capture
+        // whenever Bluetooth headphones were connected, since macOS makes the
+        // headset the default input and its hands-free profile runs at 16 kHz.
+        let inputFormat = input.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0 else { throw DictationError.noAudioInput }
 
         // Everything the audio thread touches is captured into this object up
@@ -352,6 +376,15 @@ final class DictationEngine: ObservableObject {
         await start()
     }
 
+    /// Synchronous safety net for app termination: `teardown` is async and may
+    /// not finish if we are being torn down, and leaving the user's default
+    /// input pointing somewhere they did not choose would outlive the app.
+    func restoreDefaultInputIfNeeded() {
+        guard let restore = defaultInputToRestore else { return }
+        AudioDevices.setDefaultInputDevice(restore)
+        defaultInputToRestore = nil
+    }
+
     // MARK: - Teardown
 
     private func teardown() async {
@@ -380,6 +413,11 @@ final class DictationEngine: ObservableObject {
         recognizerTask?.cancel()
         recognizerTask = nil
         transcriber = nil
+        if let restore = defaultInputToRestore {
+            AudioDevices.setDefaultInputDevice(restore)
+            defaultInputToRestore = nil
+        }
+
         analyzerFormat = nil
         boundDeviceID = nil
         audioStartedAt = nil

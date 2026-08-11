@@ -63,6 +63,42 @@ enum AudioDevices {
         return builtInInput() ?? inputDevices().first
     }
 
+    // MARK: - System default input
+
+    /// The system-wide default input device.
+    ///
+    /// This matters because of a CoreAudio behaviour that is easy to miss: when
+    /// a Bluetooth headset is the default input, capturing from a *different*
+    /// device is starved -- measured at roughly one buffer per ten seconds,
+    /// versus a hundred when the default agrees with the device being used.
+    static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else { return nil }
+        return deviceID
+    }
+
+    @discardableResult
+    static func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value = deviceID
+        return AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size), &value
+        ) == noErr
+    }
+
     // MARK: - Property helpers
 
     private static func hasInput(_ id: AudioDeviceID) -> Bool {

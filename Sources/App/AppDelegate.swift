@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        session.dictation.restoreDefaultInputIfNeeded()
         session.server.stop()
         hotKey.stop()
         permissionPollTimer?.invalidate()
