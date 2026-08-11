@@ -49,7 +49,10 @@ final class DictationEngine: ObservableObject {
 
     private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "dictation")
 
-    private let audioEngine = AVAudioEngine()
+    /// Recreated for every session -- see `startAudio()`.
+    private var audioEngine = AVAudioEngine()
+    private var configObserver: NSObjectProtocol?
+    private var isRestartingForConfigChange = false
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
@@ -227,19 +230,31 @@ final class DictationEngine: ObservableObject {
             throw DictationError.noCompatibleAudioFormat
         }
 
+        // A fresh engine per session. An AVAudioEngine that has already been
+        // started keeps its input unit bound to the device it first resolved,
+        // and setDeviceID is then ignored -- which is why switching microphones
+        // did nothing, and why a connected Bluetooth headset left the engine
+        // pointed at a device that produced no audio.
+        audioEngine = AVAudioEngine()
         let input = audioEngine.inputNode
 
         // Bind the device *before* querying the format: the input node reports
         // the format of whichever device it is currently attached to.
-        if let device = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID) {
-            do {
-                try input.auAudioUnit.setDeviceID(device.id)
-                activeInputDeviceName = device.name
-            } catch {
-                log.error("could not select input device \(device.name): \(error.localizedDescription)")
-                activeInputDeviceName = nil
-            }
+        guard let device = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID) else {
+            throw DictationError.noAudioInput
         }
+        do {
+            try input.auAudioUnit.setDeviceID(device.id)
+        } catch {
+            throw DictationError.deviceUnavailable(name: device.name)
+        }
+        // Confirm it actually took. Silently recording from the wrong device --
+        // or from one that yields silence -- is a worse failure than saying so.
+        guard input.auAudioUnit.deviceID == device.id else {
+            throw DictationError.deviceUnavailable(name: device.name)
+        }
+        activeInputDeviceName = device.name
+        log.info("capturing from \(device.name)")
 
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0 else { throw DictationError.noAudioInput }
@@ -278,11 +293,40 @@ final class DictationEngine: ObservableObject {
 
         audioEngine.prepare()
         try audioEngine.start()
+
+        // Connecting or removing an audio device invalidates the engine's
+        // configuration; without rebuilding it the taps keep firing but deliver
+        // nothing. This is what made plugging in headphones mid-session kill
+        // capture with no visible error.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.handleConfigurationChange() }
+        }
+    }
+
+    /// Rebuilds capture after the audio hardware changes underneath us,
+    /// keeping whatever has already been transcribed.
+    private func handleConfigurationChange() async {
+        guard state == .recording, !isRestartingForConfigChange else { return }
+        isRestartingForConfigChange = true
+        defer { isRestartingForConfigChange = false }
+
+        log.info("audio configuration changed; rebuilding capture")
+        await stop()
+        await start()
     }
 
     // MARK: - Teardown
 
     private func teardown() async {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+        }
+        configObserver = nil
+
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
@@ -316,6 +360,7 @@ final class DictationEngine: ObservableObject {
         case unavailable
         case noCompatibleAudioFormat
         case noAudioInput
+        case deviceUnavailable(name: String)
         case incompatibleInputDevice(name: String, channels: Int)
 
         var errorDescription: String? {
@@ -330,6 +375,8 @@ final class DictationEngine: ObservableObject {
                 return "Could not negotiate an audio format with the speech recognizer."
             case .noAudioInput:
                 return "No audio input device is available."
+            case let .deviceUnavailable(name):
+                return "Could not record from \(name). Choose a different microphone." 
             case let .incompatibleInputDevice(name, channels):
                 return "\(name) (\(channels) channels) cannot be used for speech recognition. Choose a different microphone."
             }
