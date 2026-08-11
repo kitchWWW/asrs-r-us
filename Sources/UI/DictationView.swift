@@ -287,9 +287,11 @@ struct DictationView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             if let target = session.targetApp {
+                // Matches the section labels rather than sitting a step lighter:
+                // the destination app is worth reading, not a footnote.
                 Label(target.localizedName ?? "target app", systemImage: "arrow.turn.down.right")
                     .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help("Text will be pasted into \(target.localizedName ?? "the previous app")")
             }
