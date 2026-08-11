@@ -132,7 +132,12 @@ struct DictationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous))
+        .padding(.horizontal, 14)
+        .frame(height: GlassControlStyle.height)
+        .glassEffect(
+            .regular,
+            in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
+        )
         .help("Microphone")
     }
 
@@ -149,14 +154,10 @@ struct DictationView: View {
     /// `.menuIndicator(.hidden)` is not honoured here, so adding one of our own
     /// only produced a second, redundant glyph.
     private func pillLabel(_ title: String) -> some View {
-        HStack(spacing: 5) {
-            Text(title)
-                .font(.system(size: 11))
-                .lineLimit(1)
-        }
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 14)
-        .frame(height: GlassControlStyle.height)
+        Text(title)
+            .font(.system(size: 11, weight: .medium))
+            .lineLimit(1)
+            .foregroundStyle(.primary)
     }
 
     private var micBinding: Binding<String> {
@@ -384,7 +385,12 @@ struct DictationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous))
+        .padding(.horizontal, 14)
+        .frame(height: GlassControlStyle.height)
+        .glassEffect(
+            .regular,
+            in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
+        )
         .help("Rewrite style")
     }
 

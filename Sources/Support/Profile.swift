@@ -27,6 +27,7 @@ final class ProfileStore: ObservableObject {
         /// Pre-profiles single prompt, migrated into the first profile.
         static let legacyPrompt = "systemPrompt"
         static let prunedSeeds = "prunedSeedProfilesV2"
+        static let seededWorkPersonal = "seededWorkPersonalV1"
     }
 
     @Published var profiles: [Profile] {
@@ -71,6 +72,14 @@ final class ProfileStore: ObservableObject {
             resolved = stored
         }
         var prepared = Self.upgradingLegacyPrompts(in: resolved)
+        // Existing installs need these added explicitly: seeding only runs on a
+        // first launch with an empty store.
+        if !UserDefaults.standard.bool(forKey: Key.seededWorkPersonal) {
+            let existing = Set(prepared.map(\.name))
+            if !existing.contains("Work") { prepared.append(Self.workProfile()) }
+            if !existing.contains("Personal") { prepared.append(Self.personalProfile()) }
+            UserDefaults.standard.set(true, forKey: Key.seededWorkPersonal)
+        }
         if !UserDefaults.standard.bool(forKey: Key.prunedSeeds) {
             let pruned = prepared.filter { !["Work", "Friends"].contains($0.name) }
             if !pruned.isEmpty { prepared = pruned }
@@ -294,6 +303,37 @@ final class ProfileStore: ObservableObject {
         return basePrompt + "\n\n" + style
     }
 
+    static func workProfile() -> Profile {
+        Profile(
+            name: "Work",
+            prompt: template(styleFor: """
+            Style:
+            - This is professional writing: email, Slack to colleagues, tickets, docs.
+            - Clear, warm, and competent. Not stiff, not chummy.
+            - Use real emoji sparingly and only where the speaker clearly \
+            intended one.
+            - Prefer complete sentences and correct punctuation. Break \
+            multi-topic dictation into short paragraphs.
+            """)
+        )
+    }
+
+    static func personalProfile() -> Profile {
+        Profile(
+            name: "Personal",
+            prompt: template(styleFor: """
+            Style:
+            - This is casual writing to friends and family.
+            - Keep it loose and conversational. Contractions, sentence \
+            fragments, and lowercase are fine if that is how it was said.
+            - Render a smiley as the text emoticon :) rather than an emoji, and \
+            likewise :( and ;) for the obvious ones.
+            - Do not tidy the personality out of it. Slang stays.
+            - Short. Do not pad a two-line message into a paragraph.
+            """)
+        )
+    }
+
     static func defaultProfiles() -> [Profile] {
         [
             Profile(
@@ -304,6 +344,8 @@ final class ProfileStore: ObservableObject {
                 speech formal, or formal speech casual.
                 """)
             ),
+            workProfile(),
+            personalProfile(),
         ]
     }
 }
