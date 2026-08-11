@@ -1,0 +1,316 @@
+import AVFoundation
+import Foundation
+import Speech
+import os
+
+/// Number of level samples kept for the waveform display. File scope because
+/// `Self` cannot be referenced from a stored property initializer.
+let waveformSampleCount = 22
+
+/// Streaming on-device speech recognition built on macOS 26's `SpeechAnalyzer`
+/// / `SpeechTranscriber`.
+///
+/// The transcriber emits two kinds of result: *volatile* (a best guess for
+/// audio still in flight, replaced as more arrives) and *final* (locked in).
+/// We keep them separate so the UI can show settled text plainly and in-flight
+/// text dimmed, and so downstream consumers can debounce on the combined value.
+@MainActor
+final class DictationEngine: ObservableObject {
+
+    enum State: Equatable {
+        case idle
+        case preparing
+        case recording
+        case failed(String)
+    }
+
+    @Published private(set) var state: State = .idle
+    /// Text the recognizer has committed to.
+    @Published private(set) var finalizedText: String = ""
+    /// Current best guess for audio still being processed.
+    @Published private(set) var volatileText: String = ""
+    /// Rough input level, 0...1, for the level meter.
+    @Published private(set) var inputLevel: Double = 0
+    /// Name of the microphone actually in use, once resolved.
+    @Published private(set) var activeInputDeviceName: String?
+    /// Rolling window of recent levels, oldest first, for the waveform display.
+    @Published private(set) var levelHistory: [Double] = Array(repeating: 0, count: waveformSampleCount)
+
+    var transcript: String {
+        volatileText.isEmpty
+            ? finalizedText
+            : (finalizedText.isEmpty ? volatileText : finalizedText + " " + volatileText)
+    }
+
+    var isRecording: Bool { state == .recording }
+
+    /// Called on every transcript change so callers can kick off a rewrite.
+    var onTranscriptChange: ((String) -> Void)?
+
+    private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "dictation")
+
+    private let audioEngine = AVAudioEngine()
+    private var analyzer: SpeechAnalyzer?
+    private var transcriber: SpeechTranscriber?
+    private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
+    private var recognizerTask: Task<Void, Never>?
+    private var analyzerFormat: AVAudioFormat?
+    private var feeder: AudioFeeder?
+    private var levelTimer: Timer?
+
+    // MARK: - Control
+
+    /// Starts, or resumes, recognition.
+    ///
+    /// Resuming *appends* to whatever has already been transcribed: pressing
+    /// Stop and then Record again continues the same dictation instead of
+    /// starting over. Only `reset()` clears the transcript, and a new session
+    /// calls it explicitly.
+    func start() async {
+        guard state != .recording && state != .preparing else { return }
+        state = .preparing
+        // Deliberately does not touch `finalizedText` -- see the note above.
+        // The volatile tail belongs to the previous recognizer instance, which
+        // is gone, so it is dropped.
+        volatileText = ""
+        inputLevel = 0
+
+        do {
+            try await authorize()
+            try await configurePipeline()
+            try startAudio()
+            state = .recording
+            log.info("dictation started")
+        } catch {
+            log.error("dictation failed to start: \(error.localizedDescription)")
+            await teardown()
+            state = .failed(Self.describe(error))
+        }
+    }
+
+    /// Stops the microphone and waits for the recognizer to flush any audio it
+    /// is still holding, so the last words are not dropped.
+    func stop() async {
+        guard state == .recording || state == .preparing else { return }
+        await teardown()
+        if case .failed = state {} else { state = .idle }
+        log.info("dictation stopped")
+    }
+
+    func reset() {
+        finalizedText = ""
+        volatileText = ""
+        if case .failed = state { state = .idle }
+    }
+
+    // MARK: - Permissions
+
+    private func authorize() async throws {
+        let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        guard micGranted else { throw DictationError.microphoneDenied }
+
+        let speechStatus = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+        }
+        guard speechStatus == .authorized else { throw DictationError.speechDenied }
+    }
+
+    // MARK: - Pipeline
+
+    private func configurePipeline() async throws {
+        guard SpeechTranscriber.isAvailable else { throw DictationError.unavailable }
+
+        let locale = await Self.resolveLocale()
+
+        // `.progressiveTranscription` is the preset that emits volatile results
+        // as you speak; the plain `.transcription` preset only reports finals.
+        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        self.transcriber = transcriber
+
+        try await ensureModelInstalled(for: transcriber, locale: locale)
+
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(
+            compatibleWith: [transcriber]
+        ) else { throw DictationError.noCompatibleAudioFormat }
+        analyzerFormat = format
+
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        inputBuilder = continuation
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        self.analyzer = analyzer
+
+        try await analyzer.prepareToAnalyze(in: format)
+        try await analyzer.start(inputSequence: stream)
+
+        recognizerTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                for try await result in transcriber.results {
+                    let text = String(result.text.characters)
+                    await MainActor.run {
+                        if result.isFinal {
+                            self.appendFinalized(text)
+                            self.volatileText = ""
+                        } else {
+                            self.volatileText = text
+                        }
+                        self.onTranscriptChange?(self.transcript)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.log.error("recognizer stream ended: \(error.localizedDescription)")
+                    self.state = .failed(Self.describe(error))
+                }
+            }
+        }
+    }
+
+    private func appendFinalized(_ text: String) {
+        let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !piece.isEmpty else { return }
+        finalizedText = finalizedText.isEmpty ? piece : finalizedText + " " + piece
+    }
+
+    /// The first run on a given locale may need to download the speech model.
+    private func ensureModelInstalled(
+        for transcriber: SpeechTranscriber,
+        locale: Locale
+    ) async throws {
+        let installed = await SpeechTranscriber.installedLocales
+        let alreadyInstalled = installed.contains {
+            $0.identifier(.bcp47) == locale.identifier(.bcp47)
+        }
+        guard !alreadyInstalled else { return }
+
+        if let request = try await AssetInventory.assetInstallationRequest(
+            supporting: [transcriber]
+        ) {
+            log.info("downloading speech model for \(locale.identifier)")
+            try await request.downloadAndInstall()
+        }
+        // Reserving keeps the model resident so later sessions start instantly.
+        _ = try? await AssetInventory.reserve(locale: locale)
+    }
+
+    private static func resolveLocale() async -> Locale {
+        let current = Locale.current
+        if let match = await SpeechTranscriber.supportedLocale(equivalentTo: current) {
+            return match
+        }
+        return Locale(identifier: "en-US")
+    }
+
+    // MARK: - Audio
+
+    private func startAudio() throws {
+        guard let analyzerFormat, let continuation = inputBuilder else {
+            throw DictationError.noCompatibleAudioFormat
+        }
+
+        let input = audioEngine.inputNode
+
+        // Bind the device *before* querying the format: the input node reports
+        // the format of whichever device it is currently attached to.
+        if let device = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID) {
+            do {
+                try input.auAudioUnit.setDeviceID(device.id)
+                activeInputDeviceName = device.name
+            } catch {
+                log.error("could not select input device \(device.name): \(error.localizedDescription)")
+                activeInputDeviceName = nil
+            }
+        }
+
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else { throw DictationError.noAudioInput }
+
+        // Everything the audio thread touches is captured into this object up
+        // front. The render callback must never hop actors or take locks, so
+        // it deliberately holds no reference back to DictationEngine.
+        let feeder = AudioFeeder(
+            continuation: continuation,
+            inputFormat: inputFormat,
+            targetFormat: analyzerFormat
+        )
+        self.feeder = feeder
+
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            feeder.feed(buffer)
+        }
+
+        // Poll the level on the main actor instead of dispatching from the
+        // audio thread once per buffer.
+        levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let feeder = self.feeder else { return }
+                let level = feeder.currentLevel
+                self.inputLevel = level
+                self.levelHistory.removeFirst()
+                self.levelHistory.append(level)
+            }
+        }
+
+        audioEngine.prepare()
+        try audioEngine.start()
+    }
+
+    // MARK: - Teardown
+
+    private func teardown() async {
+        if audioEngine.isRunning {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
+        levelTimer?.invalidate()
+        levelTimer = nil
+        feeder = nil
+        inputBuilder?.finish()
+        inputBuilder = nil
+
+        // Flush trailing audio through the analyzer before dropping it, so the
+        // tail of the last sentence still lands as a final result.
+        if let analyzer {
+            try? await analyzer.finalizeAndFinishThroughEndOfInput()
+        }
+        analyzer = nil
+
+        recognizerTask?.cancel()
+        recognizerTask = nil
+        transcriber = nil
+        analyzerFormat = nil
+        inputLevel = 0
+        levelHistory = Array(repeating: 0, count: waveformSampleCount)
+    }
+
+    // MARK: - Errors
+
+    enum DictationError: LocalizedError {
+        case microphoneDenied
+        case speechDenied
+        case unavailable
+        case noCompatibleAudioFormat
+        case noAudioInput
+
+        var errorDescription: String? {
+            switch self {
+            case .microphoneDenied:
+                return "Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone."
+            case .speechDenied:
+                return "Speech recognition access denied. Enable it in System Settings > Privacy & Security > Speech Recognition."
+            case .unavailable:
+                return "On-device speech recognition is unavailable on this Mac."
+            case .noCompatibleAudioFormat:
+                return "Could not negotiate an audio format with the speech recognizer."
+            case .noAudioInput:
+                return "No audio input device is available."
+            }
+        }
+    }
+
+    private static func describe(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+}

@@ -1,0 +1,62 @@
+name: ASRs-R-US
+options:
+  bundleIdPrefix: com.brianellis
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: 6VXP2ZNFJU          # "Brian Ellis" personal team (NOT Pulse Studio 48489KZ45M)
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: 5.0
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    ALWAYS_SEARCH_USER_PATHS: NO
+
+targets:
+  ASRs-R-US:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources/Assets.xcassets
+        optional: true
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleName: ASRs-R-US
+        CFBundleDisplayName: ASRs-R-US
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundlePackageType: APPL
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        # Menu-bar-only agent: no Dock icon, no main menu bar takeover.
+        LSUIElement: true
+        NSMicrophoneUsageDescription: >-
+          ASRs-R-US listens to your microphone to transcribe speech into
+          editable text.
+        NSSpeechRecognitionUsageDescription: >-
+          ASRs-R-US uses on-device speech recognition to turn your dictation
+          into text.
+        NSHumanReadableCopyright: ""
+    entitlements:
+      path: Resources/ASRs-R-US.entitlements
+      properties:
+        # App Sandbox is intentionally OFF. The app needs a global CGEventTap
+        # (F7 capture), the Accessibility API, and the ability to paste into
+        # other applications -- none of which work inside the sandbox.
+        com.apple.security.app-sandbox: false
+        com.apple.security.device.audio-input: true
+        com.apple.security.automation.apple-events: true
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brianellis.ASRs-R-US
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        COMBINE_HIDPI_IMAGES: YES
