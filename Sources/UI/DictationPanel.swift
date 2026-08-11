@@ -117,6 +117,11 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
         )
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        // Glass only reads as glass over a genuinely transparent window;
+        // otherwise the system background sits behind it and flattens it out.
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.hidesOnDeactivate = false

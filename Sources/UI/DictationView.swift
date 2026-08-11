@@ -22,7 +22,6 @@ struct DictationView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
 
             VStack(spacing: 7) {
                 transcriptBox
@@ -38,7 +37,40 @@ struct DictationView: View {
             footer
         }
         .frame(minWidth: 460, minHeight: 320)
-        .background(.regularMaterial)
+        .background {
+            // One glass slab for the whole panel. Inner surfaces stay plain so
+            // text keeps its contrast -- stacking glass on glass turns muddy.
+            //
+            // The scrim underneath is what makes it readable: glass alone is
+            // transparent enough that whatever is behind the window competes
+            // with the transcript.
+            // Deliberately thin: the chrome is where the transparency should
+            // live. Legibility is bought back on the text panes instead, which
+            // are near-opaque -- rather than by fogging the whole window, which
+            // costs the glass everywhere and still leaves text on a busy field.
+            ZStack {
+                panelShape.glassEffect(.regular, in: panelShape)
+                // A light veil, not a fog. The panes cover the middle of the
+                // window, so this is only really visible behind the header and
+                // footer -- exactly where controls need to out-read whatever is
+                // on screen behind them.
+                panelShape.fill(Color(nsColor: .windowBackgroundColor).opacity(0.22))
+            }
+        }
+        .overlay {
+            // Bright inner rim, the way a real pane of glass catches light at
+            // its edge.
+            panelShape
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.5), .white.opacity(0.08)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
+        }
+        .clipShape(panelShape)
         .onExitCommand { escapeAction?() }
     }
 
@@ -70,6 +102,7 @@ struct DictationView: View {
                 Label("Clear", systemImage: "arrow.counterclockwise")
             }
             .controlSize(.small)
+            .buttonStyle(.glass)
             .help("Clear everything and start listening again")
         }
         .padding(.leading, 32)      // just clears the traffic-light close button
@@ -175,7 +208,7 @@ struct DictationView: View {
                     }
                 }
                 .controlSize(.small)
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .disabled(!session.canInsertTranscript || session.isInserting)
                 .help("Paste the raw transcript instead of the rewrite")
             }
@@ -207,13 +240,29 @@ struct DictationView: View {
             .textCase(.uppercase)
     }
 
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+    }
+
+    /// Near-opaque reading surface. Text is the one thing in the window that
+    /// should not have to compete with whatever is behind it, so the panes stay
+    /// solid while everything around them stays glass.
     private var boxBackground: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(Color(nsColor: .textBackgroundColor).opacity(0.6))
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return shape
+            .fill(Color(nsColor: .textBackgroundColor).opacity(0.93))
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08))
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.35), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    ),
+                    lineWidth: 0.5
+                )
             )
+            .shadow(color: .black.opacity(0.10), radius: 6, y: 2)
     }
 
     // MARK: - Error + footer
@@ -268,7 +317,7 @@ struct DictationView: View {
                 .frame(minWidth: 26)
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
         }
