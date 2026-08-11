@@ -177,9 +177,12 @@ final class AppSettings: ObservableObject {
             Key.restorePasteboard: true,
             Key.insertionMethod: TextInserter.Method.paste.rawValue,
             Key.backend: RewriteBackendKind.local.rawValue,
-            // Benchmarked fastest for this task on Apple Silicon: 67 ms median
-            // on a short transcript, and more faithful than larger models.
-            Key.localModelRepo: "bartowski/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
+            // Benchmarked against Qwen2.5-1.5B and Apple Intelligence on the
+            // real prompt: same rule-compliance as the 1.5B but noticeably
+            // better structure and capitalisation, and it holds content the
+            // smaller model silently drops. ~540 ms median, which the debounce
+            // absorbs.
+            Key.localModelRepo: "bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
             Key.localPort: 8080,
             Key.llamaServerPath: "",
             Key.inputDeviceUID: "",
@@ -199,7 +202,7 @@ final class AppSettings: ObservableObject {
             rawValue: defaults.string(forKey: Key.backend) ?? ""
         ) ?? .local
         localModelRepo = defaults.string(forKey: Key.localModelRepo)
-            ?? "bartowski/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M"
+            ?? "bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
         localPort = defaults.integer(forKey: Key.localPort)
         llamaServerPath = defaults.string(forKey: Key.llamaServerPath) ?? ""
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID) ?? ""
