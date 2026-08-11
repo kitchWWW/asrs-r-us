@@ -80,6 +80,38 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(dictionary, forKey: Key.dictionary) }
     }
 
+    /// Bare terms for the recognizer's contextual biasing.
+    ///
+    /// The dictionary lines carry notes meant for the language model
+    /// (`piece (music, not "peace")`). The recognizer wants only the word
+    /// itself, so the annotations are stripped here.
+    var dictionaryTerms: [String] {
+        var seen = Set<String>()
+        return dictionary.split(separator: "\n").compactMap { rawLine in
+            var term = String(rawLine)
+
+            // "peace -> piece" biases toward the intended spelling, not the
+            // mistake it replaces.
+            for arrow in ["->", "\u{2192}"] {
+                if let range = term.range(of: arrow) {
+                    term = String(term[range.upperBound...])
+                    break
+                }
+            }
+            // Drop the parenthetical note, which is guidance for the model.
+            if let paren = term.firstIndex(of: "(") {
+                term = String(term[..<paren])
+            }
+            term = term.trimmingCharacters(
+                in: CharacterSet(charactersIn: " \t\"'`*-\u{2022}")
+            )
+            guard !term.isEmpty else { return nil }
+            // The same term can arrive twice, e.g. from both `piece (music)`
+            // and `peace -> piece`.
+            return seen.insert(term.lowercased()).inserted ? term : nil
+        }
+    }
+
     /// The dictionary rendered as a prompt section, or nil when empty.
     var dictionaryPromptSection: String? {
         let entries = dictionary

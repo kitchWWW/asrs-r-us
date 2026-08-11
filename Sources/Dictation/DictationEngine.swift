@@ -140,6 +140,24 @@ final class DictationEngine: ObservableObject {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
 
+        // Bias the recognizer toward the user's vocabulary. Fixing a term here
+        // means the wrong word is never produced, which beats asking the
+        // rewrite model to detect and repair it afterwards -- especially for
+        // acronyms and proper nouns, where it has no context to work from.
+        let terms = AppSettings.shared.dictionaryTerms
+        if !terms.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = terms
+            do {
+                try await analyzer.setContext(context)
+                log.info("biasing recognizer with \(terms.count) dictionary terms")
+            } catch {
+                // Biasing is an enhancement; a failure here must not stop
+                // dictation from working.
+                log.error("could not set contextual strings: \(error.localizedDescription)")
+            }
+        }
+
         try await analyzer.prepareToAnalyze(in: format)
         try await analyzer.start(inputSequence: stream)
 

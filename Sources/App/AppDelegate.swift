@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = NSMenuItem(
             title: "Settings…",
             action: #selector(showSettings),
-            keyEquivalent: ","
+            keyEquivalent: ""
         )
         settings.target = self
         appMenu.addItem(settings)
@@ -78,7 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainMenu.addItem(appMenuItem)
 
         // Edit menu. These all dispatch to the first responder, which is what
-        // makes them work inside NSTextView / SwiftUI TextEditor.
+        // makes them work inside the text views. They are deliberately kept
+        // when other menu shortcuts are removed: an .accessory app has no menu
+        // bar, and AppKit routes Cut/Copy/Paste/Select All *through* the main
+        // menu, so dropping them silently breaks editing everywhere in the app.
         let editMenuItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(NSMenuItem(
@@ -163,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = NSMenuItem(
             title: "Settings…",
             action: #selector(showSettings),
-            keyEquivalent: ","
+            keyEquivalent: ""
         )
         settings.target = self
         menu.addItem(settings)
@@ -173,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let quit = NSMenuItem(
             title: "Quit ASRs-R-US",
             action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
+            keyEquivalent: ""
         )
         menu.addItem(quit)
 
@@ -220,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(
                 title: entry.menuTitle,
                 action: #selector(copyHistoryEntry(_:)),
-                keyEquivalent: index < 9 ? String(index + 1) : ""
+                keyEquivalent: ""
             )
             item.target = self
             item.representedObject = entry.id
