@@ -25,9 +25,13 @@ final class FrontmostAppTracker: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let self else { return }
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            MainActor.assumeIsolated {
+            // Hop to the main actor properly rather than asserting we are
+            // already on it. `queue: .main` runs the block on the main *thread*,
+            // but not on the MainActor *executor* Swift checks for, so
+            // `assumeIsolated` traps here -- and this fires on every app switch.
+            Task { @MainActor in
+                guard let self else { return }
                 if let external = Self.externalApp(app, excluding: self.selfBundleID) {
                     self.lastExternalApp = external
                 }
