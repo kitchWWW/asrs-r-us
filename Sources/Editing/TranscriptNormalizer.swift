@@ -27,8 +27,42 @@ enum TranscriptNormalizer {
         ("comma", ","),
     ]
 
+    /// Spoken punctuation that is unambiguous on its own. The Bool is whether
+    /// the mark attaches to the word that follows it rather than the one before.
+    private static let alwaysResolved: [(phrase: String, mark: String, attachesForward: Bool)] = [
+        ("open parentheses", "(", true),
+        ("open parenthesis", "(", true),
+        ("open bracket", "(", true),
+        ("open paren", "(", true),
+        ("close parentheses", ")", false),
+        ("close parenthesis", ")", false),
+        ("close bracket", ")", false),
+        ("close paren", ")", false),
+        ("open quote", "\u{201C}", true),
+        ("close quote", "\u{201D}", false),
+    ]
+
     static func normalize(_ text: String) -> String {
         var result = text
+
+        // Phrases that are dictation even as a single occurrence. "period" has
+        // to stay ambiguous because it is an ordinary word, but nobody says
+        // "open parenthesis" except to dictate one -- so these resolve on sight,
+        // and attach to the word they wrap rather than floating on their own.
+        for (phrase, mark, attachesForward) in alwaysResolved {
+            let escaped = NSRegularExpression.escapedPattern(for: phrase)
+            let pattern = attachesForward
+                ? "\\b\(escaped)\\b[ \\t]*"     // "( word"  -> "(word"
+                : "[ \\t]*\\b\(escaped)\\b"     // "word )"  -> "word)"
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive]
+            ) else { continue }
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: NSRegularExpression.escapedTemplate(for: mark)
+            )
+        }
 
         // A spoken punctuation word sitting directly against its own mark --
         // "question mark?" -- is always dictation, never content, so it is safe
@@ -79,6 +113,8 @@ enum TranscriptNormalizer {
         for (pattern, template) in [
             ("[ \\t]+([.,?!;:])", "$1"),     // no space before punctuation
             ("([.,?!;:])\\1+", "$1"),        // never repeat a mark
+            ("\\([ \\t]+", "("),             // no gap after an opening bracket
+            ("[ \\t]+\\)", ")"),             // no gap before a closing one
             ("[ \\t]{2,}", " "),             // collapse runs of spaces
             ("[ \\t]+\\n", "\n"),            // no trailing space on a line
         ] {
