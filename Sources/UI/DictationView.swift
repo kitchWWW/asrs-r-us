@@ -94,16 +94,20 @@ struct DictationView: View {
 
             Spacer(minLength: 8)
 
-            micPicker
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    micPicker
 
-            Button {
-                session.clearAndRestart()
-            } label: {
-                Label("Clear", systemImage: "arrow.counterclockwise")
+                    Button {
+                        session.clearAndRestart()
+                    } label: {
+                        Label("Clear", systemImage: "arrow.counterclockwise")
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.glass)
+                    .help("Clear everything and start listening again")
+                }
             }
-            .controlSize(.small)
-            .buttonStyle(.glass)
-            .help("Clear everything and start listening again")
         }
         .padding(.leading, 32)      // just clears the traffic-light close button
         .padding(.trailing, 14)
@@ -111,22 +115,48 @@ struct DictationView: View {
     }
 
     /// Shows which microphone is in use, not just that one can be chosen.
+    ///
+    /// Built from `Menu` rather than `Picker`: a picker draws its own opaque
+    /// popup-button chrome, which reads as a stock control sitting on top of
+    /// the glass instead of part of it.
     private var micPicker: some View {
-        Picker(selection: micBinding) {
-            ForEach(deviceStore.devices) { device in
-                Text(device.name).tag(device.uid)
+        Menu {
+            Picker("Microphone", selection: micBinding) {
+                ForEach(deviceStore.devices) { device in
+                    Text(device.name).tag(device.uid)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.inline)
         } label: {
-            Image(systemName: "mic")
+            pillLabel(systemImage: "mic", title: currentMicName)
         }
-        .pickerStyle(.menu)
-        .controlSize(.small)
-        .frame(maxWidth: 190)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .glassEffect(.regular, in: Capsule())
         .help("Microphone")
     }
 
-    /// Reads through to the resolved device so the built-in mic shows as the
-    /// selection by default, rather than an empty "automatic" row.
+    private var currentMicName: String {
+        let uid = deviceStore.resolvedUID(for: session.settings.inputDeviceUID)
+        return deviceStore.devices.first { $0.uid == uid }?.name ?? "Microphone"
+    }
+
+    /// Shared pill content so every glass control lines up on the same metrics.
+    private func pillLabel(systemImage: String, title: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .medium))
+            Text(title)
+                .font(.system(size: 11))
+                .lineLimit(1)
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
     private var micBinding: Binding<String> {
         Binding(
             get: { deviceStore.resolvedUID(for: session.settings.inputDeviceUID) },
@@ -175,7 +205,10 @@ struct DictationView: View {
             var volatilePart = AttributedString(
                 (dictation.finalizedText.isEmpty ? "" : " ") + dictation.volatileText
             )
-            volatilePart.foregroundColor = .secondary
+            // Highlighted rather than greyed: dimming the newest words makes the
+            // part you are actively speaking the hardest part to read.
+            volatilePart.foregroundColor = .primary
+            volatilePart.backgroundColor = Color.accentColor.opacity(0.16)
             result.append(volatilePart)
         }
         if result.characters.isEmpty {
@@ -300,13 +333,23 @@ struct DictationView: View {
 
             Text("esc to close")
                 .font(.system(size: 10))
-                .foregroundStyle(.quaternary)
+                .foregroundStyle(.secondary)
 
-            profilePicker
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    profilePicker
+                    useButton
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
 
-            Button {
-                Task { await useAction?() }
-            } label: {
+    private var useButton: some View {
+        Button {
+            Task { await useAction?() }
+        } label: {
                 Group {
                     if session.isInserting {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
@@ -322,22 +365,26 @@ struct DictationView: View {
             .buttonStyle(.glassProminent)
             .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
     /// Switching profile re-runs the rewrite so the change is visible
     /// immediately rather than only affecting the next sentence.
     private var profilePicker: some View {
-        Picker("", selection: profileBinding) {
-            ForEach(session.profiles.profiles) { profile in
-                Text(profile.name).tag(profile.id)
+        Menu {
+            Picker("Profile", selection: profileBinding) {
+                ForEach(session.profiles.profiles) { profile in
+                    Text(profile.name).tag(profile.id)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.inline)
+        } label: {
+            pillLabel(systemImage: "sparkles", title: session.profiles.active.name)
         }
-        .labelsHidden()
-        .controlSize(.small)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .glassEffect(.regular, in: Capsule())
         .help("Rewrite style")
     }
 
