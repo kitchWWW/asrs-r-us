@@ -50,6 +50,40 @@ final class EditTracker: ObservableObject {
         baseline = edited
     }
 
+    /// Re-applies recorded corrections to a fresh rewrite.
+    ///
+    /// The prompt already describes each edit, but honouring it is left to the
+    /// model, and a small local model frequently reintroduces the very wording
+    /// the user just fixed. Replaying the substitutions in code makes the
+    /// correction stick regardless of what the model returns.
+    func applying(to text: String) -> String {
+        var result = text
+        for edit in edits {
+            // Match on the word itself, ignoring punctuation captured by the
+            // word-boundary widening. A correction recorded as "Friday." must
+            // still apply when the new rewrite punctuates it as "Friday,".
+            let before = edit.before.trimmingCharacters(in: Self.edgePunctuation)
+            let after = edit.after.trimmingCharacters(in: Self.edgePunctuation)
+            guard !before.isEmpty, before != after else { continue }
+
+            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: before))\\b"
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(result.startIndex..., in: result)
+            guard regex.firstMatch(in: result, range: range) != nil else { continue }
+
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: range,
+                withTemplate: NSRegularExpression.escapedTemplate(for: after)
+            )
+        }
+        return result
+    }
+
+    /// Punctuation and whitespace that can sit on either edge of a captured
+    /// span without being part of the word the user actually corrected.
+    private static let edgePunctuation = CharacterSet(charactersIn: " \t.,;:!?\"')(")
+
     /// The block appended to the rewrite prompt describing user corrections.
     var promptContext: String? {
         guard !edits.isEmpty else { return nil }

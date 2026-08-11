@@ -129,10 +129,9 @@ struct DictationView: View {
             .labelsHidden()
             .pickerStyle(.inline)
         } label: {
-            pillLabel(systemImage: "mic", title: currentMicName)
+            pillLabel(currentMicName)
         }
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
         .glassEffect(.regular, in: Capsule())
         .help("Microphone")
@@ -144,17 +143,21 @@ struct DictationView: View {
     }
 
     /// Shared pill content so every glass control lines up on the same metrics.
-    private func pillLabel(systemImage: String, title: String) -> some View {
+    ///
+    /// Sized to match the adjacent `.glass` buttons: a menu that is visibly
+    /// shorter than the button beside it reads as a different class of control.
+    /// The disclosure chevron is drawn by the borderless menu style itself --
+    /// `.menuIndicator(.hidden)` is not honoured here, so adding one of our own
+    /// only produced a second, redundant glyph.
+    private func pillLabel(_ title: String) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .medium))
             Text(title)
                 .font(.system(size: 11))
                 .lineLimit(1)
         }
         .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .frame(height: 22)
     }
 
     private var micBinding: Binding<String> {
@@ -379,10 +382,9 @@ struct DictationView: View {
             .labelsHidden()
             .pickerStyle(.inline)
         } label: {
-            pillLabel(systemImage: "sparkles", title: session.profiles.active.name)
+            pillLabel(session.profiles.active.name)
         }
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
         .glassEffect(.regular, in: Capsule())
         .help("Rewrite style")

@@ -169,8 +169,12 @@ final class RewriteService: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
 
-                let finalText = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !finalText.isEmpty {
+                let rewritten = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rewritten.isEmpty {
+                    // Replay the user's corrections onto the new text, so an
+                    // edit survives even when the model ignores the note about
+                    // it in the prompt.
+                    let finalText = self.editTracker.applying(to: rewritten)
                     if !self.isUserEditing() {
                         self.output = finalText
                         self.editTracker.setBaseline(finalText)
