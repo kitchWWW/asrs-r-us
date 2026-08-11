@@ -76,6 +76,11 @@ final class RewriteService: ObservableObject {
                 return .unavailable("Local model is still starting up…")
             }
             return .ready(server.client)
+        case .appleIntelligence:
+            if let reason = AppleIntelligenceBackend.unavailableReason {
+                return .unavailable(reason)
+            }
+            return .ready(AppleIntelligenceBackend())
         case .anthropic:
             guard settings.hasAPIKey else {
                 return .unavailable(AnthropicClient.ClientError.missingAPIKey.localizedDescription)

@@ -37,6 +37,9 @@ struct SettingsView: View {
                 if settings.backend == .local {
                     localEngineRows
                 }
+                if settings.backend == .appleIntelligence {
+                    appleIntelligenceRow
+                }
             }
 
             if settings.backend == .anthropic {
@@ -104,6 +107,31 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { if settings.hasAPIKey, keyStatus == .untested { validateNow() } }
+    }
+
+    // MARK: - Apple Intelligence
+
+    @ViewBuilder
+    private var appleIntelligenceRow: some View {
+        HStack(spacing: 6) {
+            if let reason = AppleIntelligenceBackend.unavailableReason {
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                Text(reason)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Open Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.appleintelligence") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
+            } else {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("On-device model ready").font(.caption).foregroundStyle(.green)
+                Spacer()
+            }
+        }
     }
 
     // MARK: - Local engine

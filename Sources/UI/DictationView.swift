@@ -103,8 +103,7 @@ struct DictationView: View {
                     } label: {
                         Label("Clear", systemImage: "arrow.counterclockwise")
                     }
-                    .controlSize(.small)
-                    .buttonStyle(.glass)
+                    .buttonStyle(.glassControl)
                     .help("Clear everything and start listening again")
                 }
             }
@@ -133,7 +132,7 @@ struct DictationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .glassEffect(.regular, in: Capsule())
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous))
         .help("Microphone")
     }
 
@@ -156,8 +155,8 @@ struct DictationView: View {
                 .lineLimit(1)
         }
         .foregroundStyle(.primary)
-        .padding(.horizontal, 12)
-        .frame(height: 22)
+        .padding(.horizontal, 14)
+        .frame(height: GlassControlStyle.height)
     }
 
     private var micBinding: Binding<String> {
@@ -243,8 +242,7 @@ struct DictationView: View {
                         Text("Use transcript")
                     }
                 }
-                .controlSize(.small)
-                .buttonStyle(.glass)
+                .buttonStyle(.glassControl)
                 .disabled(!session.canInsertTranscript || session.isInserting)
                 .help("Paste the raw transcript instead of the rewrite")
             }
@@ -365,7 +363,7 @@ struct DictationView: View {
                 .frame(minWidth: 26)
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .buttonStyle(.glassProminent)
+            .buttonStyle(.glassControlProminent)
             .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
     }
@@ -386,7 +384,7 @@ struct DictationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .glassEffect(.regular, in: Capsule())
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous))
         .help("Rewrite style")
     }
 
