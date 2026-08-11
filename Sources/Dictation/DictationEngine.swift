@@ -53,6 +53,12 @@ final class DictationEngine: ObservableObject {
     private var audioEngine = AVAudioEngine()
     private var configObserver: NSObjectProtocol?
     private var isRestartingForConfigChange = false
+    /// The device the running engine is actually bound to.
+    private var boundDeviceID: AudioDeviceID?
+    /// When capture last came up, used to ignore the engine's own start-up churn.
+    private var audioStartedAt: Date?
+    private var rebuildCount = 0
+    private var lastRebuildAt: Date?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
@@ -254,6 +260,7 @@ final class DictationEngine: ObservableObject {
             throw DictationError.deviceUnavailable(name: device.name)
         }
         activeInputDeviceName = device.name
+        boundDeviceID = device.id
         log.info("capturing from \(device.name)")
 
         let inputFormat = input.outputFormat(forBus: 0)
@@ -293,6 +300,7 @@ final class DictationEngine: ObservableObject {
 
         audioEngine.prepare()
         try audioEngine.start()
+        audioStartedAt = Date()
 
         // Connecting or removing an audio device invalidates the engine's
         // configuration; without rebuilding it the taps keep firing but deliver
@@ -311,10 +319,35 @@ final class DictationEngine: ObservableObject {
     /// keeping whatever has already been transcribed.
     private func handleConfigurationChange() async {
         guard state == .recording, !isRestartingForConfigChange else { return }
+
+        // Bringing an engine up emits a configuration change of its own. Without
+        // this settling window the rebuild retriggers itself immediately and the
+        // engine thrashes: the notification arrives after the in-flight guard
+        // has already been cleared, so the guard alone cannot stop it.
+        if let started = audioStartedAt, Date().timeIntervalSince(started) < 2 { return }
+
+        // Rebuild only when something that matters actually moved -- the device
+        // we are on has disappeared, or the one we should be on is now a
+        // different device. Any other configuration churn is none of our
+        // business, and reacting to it is what caused the thrashing.
+        let available = AudioDevices.inputDevices()
+        let boundStillExists = available.contains { $0.id == boundDeviceID }
+        let desired = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID)
+        guard !boundStillExists || desired?.id != boundDeviceID else { return }
+
+        // A device that keeps reconfiguring should not take the app with it.
+        if let last = lastRebuildAt, Date().timeIntervalSince(last) > 10 { rebuildCount = 0 }
+        guard rebuildCount < 3 else {
+            log.error("audio kept reconfiguring; leaving capture alone")
+            return
+        }
+        rebuildCount += 1
+        lastRebuildAt = Date()
+
         isRestartingForConfigChange = true
         defer { isRestartingForConfigChange = false }
 
-        log.info("audio configuration changed; rebuilding capture")
+        log.info("input device changed; rebuilding capture")
         await stop()
         await start()
     }
@@ -348,6 +381,8 @@ final class DictationEngine: ObservableObject {
         recognizerTask = nil
         transcriber = nil
         analyzerFormat = nil
+        boundDeviceID = nil
+        audioStartedAt = nil
         inputLevel = 0
         levelHistory = Array(repeating: 0, count: waveformSampleCount)
     }
