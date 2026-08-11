@@ -30,6 +30,28 @@ enum TranscriptNormalizer {
     static func normalize(_ text: String) -> String {
         var result = text
 
+        // A spoken punctuation word sitting directly against its own mark --
+        // "question mark?" -- is always dictation, never content, so it is safe
+        // to resolve without guessing. This is the common case: the recognizer
+        // inserts the punctuation *and* leaves the words behind.
+        for (phrase, mark) in replacements where !mark.hasPrefix("\n") {
+            let escapedPhrase = NSRegularExpression.escapedPattern(for: phrase)
+            let escapedMark = NSRegularExpression.escapedPattern(for: mark)
+            for pattern in [
+                "[ \\t]*\\b\(escapedPhrase)\\b[ \\t]*\(escapedMark)",  // words then mark
+                "\(escapedMark)[ \\t]*\\b\(escapedPhrase)\\b",          // mark then words
+            ] {
+                guard let regex = try? NSRegularExpression(
+                    pattern: pattern, options: [.caseInsensitive]
+                ) else { continue }
+                result = regex.stringByReplacingMatches(
+                    in: result,
+                    range: NSRange(result.startIndex..., in: result),
+                    withTemplate: NSRegularExpression.escapedTemplate(for: mark)
+                )
+            }
+        }
+
         for (phrase, mark) in replacements {
             let escaped = NSRegularExpression.escapedPattern(for: phrase)
             // Two or more of the same phrase in a row, absorbing surrounding
