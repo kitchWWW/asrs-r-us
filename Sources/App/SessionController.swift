@@ -23,6 +23,10 @@ final class SessionController: ObservableObject {
     @Published private(set) var targetApp: NSRunningApplication?
     @Published private(set) var lastError: String?
     @Published private(set) var didInsert = false
+    /// True while text is being delivered to the target app. Published rather
+    /// than held as view state because Enter reaches insertion through the
+    /// window's key monitor, not the button's action.
+    @Published private(set) var isInserting = false
     /// True once the user has typed into the rewritten box. Gates plain-Enter.
     @Published private(set) var hasUserEdited = false
 
@@ -159,7 +163,10 @@ final class SessionController: ObservableObject {
 
     private func use(_ candidate: String) async -> Bool {
         let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return false }
+        guard !text.isEmpty, !isInserting else { return false }
+
+        isInserting = true
+        defer { isInserting = false }
 
         // Stop the mic first: pasting into the target while still recording
         // would keep appending transcript into a session the user is done with.

@@ -12,7 +12,6 @@ struct DictationView: View {
     private var useTranscriptAction: (() async -> Void)?
 
     @FocusState private var outputFocused: Bool
-    @State private var isInserting = false
 
     init(session: SessionController) {
         self.session = session
@@ -166,16 +165,18 @@ struct DictationView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                 }
-                Button("Use transcript") {
-                    Task {
-                        isInserting = true
-                        await useTranscriptAction?()
-                        isInserting = false
+                Button {
+                    Task { await useTranscriptAction?() }
+                } label: {
+                    if session.isInserting {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                    } else {
+                        Text("Use transcript")
                     }
                 }
                 .controlSize(.small)
                 .buttonStyle(.bordered)
-                .disabled(!session.canInsertTranscript || isInserting)
+                .disabled(!session.canInsertTranscript || session.isInserting)
                 .help("Paste the raw transcript instead of the rewrite")
             }
 
@@ -253,21 +254,22 @@ struct DictationView: View {
             profilePicker
 
             Button {
-                Task {
-                    isInserting = true
-                    await useAction?()
-                    isInserting = false
-                }
+                Task { await useAction?() }
             } label: {
-                if isInserting {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
-                } else {
-                    Text("Use")
+                Group {
+                    if session.isInserting {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else {
+                        Text("Use")
+                    }
                 }
+                // Keeps the button from resizing as the label swaps for the
+                // spinner.
+                .frame(minWidth: 26)
             }
             .keyboardShortcut(.return, modifiers: .command)
             .buttonStyle(.borderedProminent)
-            .disabled(!session.canInsert || isInserting)
+            .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
         }
         .padding(.horizontal, 16)

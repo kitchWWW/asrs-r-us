@@ -78,17 +78,19 @@ enum TextInserter {
 
         guard let saved else { return }
 
-        // Give the target time to consume the pasteboard before restoring;
-        // restoring immediately races the paste.
-        try? await Task.sleep(nanoseconds: 700_000_000)
-
-        // If something else wrote to the pasteboard in the meantime, that write
-        // is newer than ours and the user meant it -- do not stomp it.
-        guard pasteboard.changeCount == ourChangeCount else {
-            log.info("pasteboard changed during paste; skipping restore")
-            return
+        // The restore has to wait for the target to consume the pasteboard, but
+        // the caller must not: awaiting it here kept the panel on screen for an
+        // extra ~0.7 s after the paste had already landed.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            // If something else wrote to the pasteboard meanwhile, that write is
+            // newer than ours and the user meant it -- do not stomp it.
+            guard pasteboard.changeCount == ourChangeCount else {
+                log.info("pasteboard changed during paste; skipping restore")
+                return
+            }
+            restore(saved, to: pasteboard)
         }
-        restore(saved, to: pasteboard)
     }
 
     /// Builds a pasteboard item flagged as transient so clipboard managers keep
