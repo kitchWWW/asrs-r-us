@@ -193,11 +193,14 @@ final class RewriteService: ObservableObject {
     }
 
     private func buildUserMessage(transcript: String) -> String {
+        // Collapse repeated spoken punctuation before the model sees it.
+        let cleaned = TranscriptNormalizer.normalize(transcript)
+
         var parts: [String] = []
         parts.append("""
         Live dictation transcript:
         <transcript>
-        \(transcript)
+        \(cleaned)
         </transcript>
         """)
 

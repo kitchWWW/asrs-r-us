@@ -252,6 +252,11 @@ final class ProfileStore: ObservableObject {
     "the comma is in the wrong place" or "she gave a period drama a try", the \
     word is content -- leave it. When in doubt, prefer the literal word, since \
     a stray "period" is easier to spot and fix than a silently deleted one.
+    - A spoken punctuation word that sits beside the mark it names, as in "ship \
+    it period." , is one piece of punctuation: keep the mark and drop the word. \
+    No spoken punctuation word should survive into the output, and never emit \
+    repeated punctuation such as ".." or ",," or ".," -- one mark is always \
+    right.
     - Re-punctuate freely. Speech-to-text scatters periods and commas wherever \
     the speaker drew breath, chopping one thought into fragments and \
     capitalizing mid-sentence. Join those fragments back into a single clear \
