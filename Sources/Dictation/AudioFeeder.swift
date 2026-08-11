@@ -20,7 +20,11 @@ final class AudioFeeder: @unchecked Sendable {
     private var level: Double = 0
     var currentLevel: Double { level }
 
-    init(
+    /// Fails when the device's format cannot be converted to what the analyzer
+    /// wants -- multi-channel virtual devices are the usual cause. Returning nil
+    /// lets the caller report that instead of feeding the recognizer a buffer
+    /// whose layout it does not expect, which crashes inside the framework.
+    init?(
         continuation: AsyncStream<AnalyzerInput>.Continuation,
         inputFormat: AVAudioFormat,
         targetFormat: AVAudioFormat
@@ -28,9 +32,12 @@ final class AudioFeeder: @unchecked Sendable {
         self.continuation = continuation
         self.targetFormat = targetFormat
         self.needsConversion = inputFormat != targetFormat
+
         if needsConversion {
-            let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-            converter?.primeMethod = .none
+            guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+                return nil
+            }
+            converter.primeMethod = .none
             self.converter = converter
         } else {
             self.converter = nil
@@ -40,10 +47,14 @@ final class AudioFeeder: @unchecked Sendable {
     func feed(_ buffer: AVAudioPCMBuffer) {
         level = Self.peakLevel(of: buffer)
 
-        guard needsConversion, let converter else {
+        guard needsConversion else {
             continuation.yield(AnalyzerInput(buffer: buffer))
             return
         }
+        // `converter` is non-nil whenever needsConversion is true; init fails
+        // otherwise. Belt and braces: drop the buffer rather than yield a
+        // mismatched one.
+        guard let converter else { return }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024

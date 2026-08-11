@@ -141,7 +141,12 @@ final class AudioDeviceStore: ObservableObject {
     }
 
     func refresh() {
-        devices = AudioDevices.inputDevices()
+        let latest = AudioDevices.inputDevices()
+        // Republishing an identical list would invalidate views for nothing --
+        // and rebuilding a picker while its menu is dispatching a selection
+        // deallocates the action mid-call.
+        guard latest != devices else { return }
+        devices = latest
     }
 
     /// The device a given stored preference resolves to, for display.

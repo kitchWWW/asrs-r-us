@@ -81,6 +81,30 @@ final class SessionController: ObservableObject {
         Task { await dictation.start() }
     }
 
+    /// Wipes the session and starts listening again from scratch.
+    ///
+    /// Stopping before clearing is the whole point: the recognizer holds
+    /// buffered audio, and tearing it down flushes that audio as one last
+    /// finalized result. Clearing first would let those stale words land in the
+    /// supposedly-fresh transcript a moment later.
+    func clearAndRestart() {
+        Task {
+            await dictation.stop()
+            // Let any final result the flush produced land before wiping, so it
+            // is discarded rather than arriving after the reset.
+            await Task.yield()
+
+            dictation.reset()
+            rewriter.reset()
+            editTracker.reset()
+            lastUserEdit = nil
+            hasUserEdited = false
+            lastError = nil
+
+            await dictation.start()
+        }
+    }
+
     /// F7 while the panel is open: stop if recording, resume if not.
     func toggleRecording() {
         Task {

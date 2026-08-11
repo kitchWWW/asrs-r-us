@@ -229,11 +229,16 @@ final class DictationEngine: ObservableObject {
         // Everything the audio thread touches is captured into this object up
         // front. The render callback must never hop actors or take locks, so
         // it deliberately holds no reference back to DictationEngine.
-        let feeder = AudioFeeder(
+        guard let feeder = AudioFeeder(
             continuation: continuation,
             inputFormat: inputFormat,
             targetFormat: analyzerFormat
-        )
+        ) else {
+            throw DictationError.incompatibleInputDevice(
+                name: activeInputDeviceName ?? "This microphone",
+                channels: Int(inputFormat.channelCount)
+            )
+        }
         self.feeder = feeder
 
         input.removeTap(onBus: 0)
@@ -293,6 +298,7 @@ final class DictationEngine: ObservableObject {
         case unavailable
         case noCompatibleAudioFormat
         case noAudioInput
+        case incompatibleInputDevice(name: String, channels: Int)
 
         var errorDescription: String? {
             switch self {
@@ -306,6 +312,8 @@ final class DictationEngine: ObservableObject {
                 return "Could not negotiate an audio format with the speech recognizer."
             case .noAudioInput:
                 return "No audio input device is available."
+            case let .incompatibleInputDevice(name, channels):
+                return "\(name) (\(channels) channels) cannot be used for speech recognition. Choose a different microphone."
             }
         }
     }

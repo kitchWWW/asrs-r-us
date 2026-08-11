@@ -66,15 +66,12 @@ struct DictationView: View {
             micPicker
 
             Button {
-                session.toggleRecording()
+                session.clearAndRestart()
             } label: {
-                Label(
-                    dictation.isRecording ? "Stop" : "Record",
-                    systemImage: dictation.isRecording ? "stop.fill" : "mic.fill"
-                )
+                Label("Clear", systemImage: "arrow.counterclockwise")
             }
             .controlSize(.small)
-            .help("Toggle recording (F7)")
+            .help("Clear everything and start listening again")
         }
         .padding(.leading, 32)      // just clears the traffic-light close button
         .padding(.trailing, 14)
@@ -101,7 +98,13 @@ struct DictationView: View {
     private var micBinding: Binding<String> {
         Binding(
             get: { deviceStore.resolvedUID(for: session.settings.inputDeviceUID) },
-            set: { session.changeInputDevice(uid: $0) }
+            // Deferred: switching device restarts the audio engine, which makes
+            // CoreAudio republish its device list and SwiftUI rebuild this very
+            // menu. Doing that synchronously frees the action mid-dispatch and
+            // crashes with a null call.
+            set: { uid in
+                DispatchQueue.main.async { session.changeInputDevice(uid: uid) }
+            }
         )
     }
 
@@ -176,32 +179,14 @@ struct DictationView: View {
                 .help("Paste the raw transcript instead of the rewrite")
             }
 
-            TextEditor(text: outputBinding)
-                .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
-                .padding(4)
-                .frame(minHeight: 120)
-                .background(boxBackground)
-                .focused($outputFocused)
-                .overlay(alignment: .topLeading) {
-                    if rewriter.isPending {
-                        // Same insets as the placeholder below, so the mirrored
-                        // text lines up with what the editor actually draws.
-                        InlineCaret(text: rewriter.output)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 12)
-                    }
-                }
-                .overlay(alignment: .topLeading) {
-                    if rewriter.output.isEmpty {
-                        Text("The polished version appears here. You can edit it directly.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 12)
-                            .allowsHitTesting(false)
-                    }
-                }
+            RewrittenEditor(
+                text: outputBinding,
+                showsPendingCaret: rewriter.isPending,
+                placeholder: "The polished version appears here. You can edit it directly."
+            )
+            .frame(minHeight: 120)
+            .background(boxBackground)
+            .focused($outputFocused)
         }
     }
 
