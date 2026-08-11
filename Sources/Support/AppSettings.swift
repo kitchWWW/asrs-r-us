@@ -21,6 +21,7 @@ final class AppSettings: ObservableObject {
         static let inputDeviceUID = "inputDeviceUID"
         static let hotKey = "hotKeyBinding"
         static let dictionary = "dictionary"
+        static let techVocabulary = "includeTechVocabulary"
     }
 
     @Published var apiKey: String {
@@ -80,6 +81,11 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(dictionary, forKey: Key.dictionary) }
     }
 
+    /// Whether the built-in technical vocabulary is fed to the recognizer.
+    @Published var includeTechVocabulary: Bool {
+        didSet { defaults.set(includeTechVocabulary, forKey: Key.techVocabulary) }
+    }
+
     /// Bare terms for the recognizer's contextual biasing.
     ///
     /// The dictionary lines carry notes meant for the language model
@@ -87,7 +93,16 @@ final class AppSettings: ObservableObject {
     /// itself, so the annotations are stripped here.
     var dictionaryTerms: [String] {
         var seen = Set<String>()
-        return dictionary.split(separator: "\n").compactMap { rawLine in
+        let personal = parsedPersonalTerms(seen: &seen)
+        guard includeTechVocabulary else { return personal }
+        // Personal entries first: they are added last-in-wins by the user and
+        // should win any collision with the built-in pack.
+        let tech = TechVocabulary.terms.filter { seen.insert($0.lowercased()).inserted }
+        return personal + tech
+    }
+
+    private func parsedPersonalTerms(seen: inout Set<String>) -> [String] {
+        dictionary.split(separator: "\n").compactMap { rawLine in
             var term = String(rawLine)
 
             // "peace -> piece" biases toward the intended spelling, not the
@@ -169,6 +184,7 @@ final class AppSettings: ObservableObject {
             Key.llamaServerPath: "",
             Key.inputDeviceUID: "",
             Key.dictionary: "",
+            Key.techVocabulary: true,
         ])
         apiKey = Keychain.string(for: Key.apiKeyAccount)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
@@ -188,6 +204,7 @@ final class AppSettings: ObservableObject {
         llamaServerPath = defaults.string(forKey: Key.llamaServerPath) ?? ""
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID) ?? ""
         dictionary = defaults.string(forKey: Key.dictionary) ?? ""
+        includeTechVocabulary = defaults.bool(forKey: Key.techVocabulary)
         hotKey = defaults.data(forKey: Key.hotKey)
             .flatMap { try? JSONDecoder().decode(HotKeyBinding.self, from: $0) }
             ?? .f7

@@ -332,7 +332,10 @@ struct DictionarySettingsView: View {
     """
 
     var body: some View {
-        TextEditor(text: $settings.dictionary)
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Include built-in technical vocabulary", isOn: $settings.includeTechVocabulary)
+
+            TextEditor(text: $settings.dictionary)
             .font(.system(size: 12, design: .monospaced))
             .scrollContentBackground(.hidden)
             .padding(6)
@@ -354,6 +357,7 @@ struct DictionarySettingsView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .padding(14)
+        }
+        .padding(14)
     }
 }

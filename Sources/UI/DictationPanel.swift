@@ -36,9 +36,10 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
     /// Opens the panel and starts a new session targeting whatever app is
     /// frontmost right now.
     func present() {
-        // Capture the target BEFORE activating ourselves, or we'd record
-        // ASRs-R-US as its own paste target.
-        let target = NSWorkspace.shared.frontmostApplication
+        // The tracker, not `frontmostApplication`: opening from the status menu
+        // can leave us frontmost, which would record ASRs-R-US as its own paste
+        // target.
+        let target = FrontmostAppTracker.shared.target
         session.beginSession(target: target)
 
         let panel = panel ?? makePanel()

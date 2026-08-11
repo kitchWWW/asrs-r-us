@@ -17,6 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)   // menu bar only, no Dock icon
+
+        // Touch the tracker now so it starts observing app activations
+        // immediately. Left lazy, it would not exist until the first menu click
+        // and would have missed every activation before that -- including the
+        // app the user was actually in.
+        _ = FrontmostAppTracker.shared
+
         installMainMenu()
         installStatusItem()
         installHotKey()
@@ -229,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.representedObject = entry.id
             item.indentationLevel = 1
             item.toolTip = entry.text
+            // Wording matches what the click now does.
             menu.addItem(item)
         }
 
@@ -261,11 +269,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ProfileStore.shared.selectedID = id
     }
 
+    /// Inserts the entry where the user was working, rather than only copying
+    /// it and making them paste. Falls back to the clipboard when there is no
+    /// app to target.
     @objc private func copyHistoryEntry(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? DictationHistory.Entry.ID,
               let entry = DictationHistory.shared.entries.first(where: { $0.id == id })
         else { return }
-        DictationHistory.shared.copyToClipboard(entry)
+
+        guard let target = FrontmostAppTracker.shared.target else {
+            DictationHistory.shared.copyToClipboard(entry)
+            return
+        }
+
+        Task {
+            do {
+                try await TextInserter.insert(
+                    entry.text,
+                    into: target,
+                    method: session.settings.insertionMethod,
+                    restorePasteboard: session.settings.restorePasteboard
+                )
+            } catch {
+                // Anything that stops insertion still leaves it on the
+                // clipboard, so the click is never a dead end.
+                DictationHistory.shared.copyToClipboard(entry)
+                self.log.error("history insert failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     @objc private func clearHistory() {
