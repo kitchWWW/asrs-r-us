@@ -120,3 +120,50 @@ enum AudioDevices {
         return string.isEmpty ? nil : string
     }
 }
+
+/// Cached list of input devices, refreshed when the hardware set changes.
+///
+/// The panel header redraws ~30 times a second to animate the waveform, so the
+/// device list cannot be enumerated from a SwiftUI body -- that would run a
+/// burst of CoreAudio queries per second. A HAL property listener keeps this
+/// current without polling, so hot-plugged microphones still appear.
+@MainActor
+final class AudioDeviceStore: ObservableObject {
+    static let shared = AudioDeviceStore()
+
+    @Published private(set) var devices: [AudioDevices.Device] = []
+
+    private var listenerBlock: AudioObjectPropertyListenerBlock?
+
+    private init() {
+        devices = AudioDevices.inputDevices()
+        installListener()
+    }
+
+    func refresh() {
+        devices = AudioDevices.inputDevices()
+    }
+
+    /// The device a given stored preference resolves to, for display.
+    func resolvedUID(for preferredUID: String) -> String {
+        if !preferredUID.isEmpty, devices.contains(where: { $0.uid == preferredUID }) {
+            return preferredUID
+        }
+        return AudioDevices.builtInInput()?.uid ?? devices.first?.uid ?? ""
+    }
+
+    private func installListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { _, _ in
+            Task { @MainActor in AudioDeviceStore.shared.refresh() }
+        }
+        listenerBlock = block
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
+        )
+    }
+}

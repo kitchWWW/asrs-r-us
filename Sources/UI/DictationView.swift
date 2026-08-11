@@ -5,6 +5,7 @@ struct DictationView: View {
     @ObservedObject var session: SessionController
     @ObservedObject private var dictation: DictationEngine
     @ObservedObject private var rewriter: RewriteService
+    @ObservedObject private var deviceStore = AudioDeviceStore.shared
 
     private var escapeAction: (() -> Void)?
     private var useAction: (() async -> Void)?
@@ -80,30 +81,26 @@ struct DictationView: View {
         .frame(height: 34)
     }
 
-    /// Rebuilt on open so hot-plugged microphones show up without a relaunch.
+    /// Shows which microphone is in use, not just that one can be chosen.
     private var micPicker: some View {
-        Menu {
-            Picker("Microphone", selection: micBinding) {
-                Text("Built-in Microphone").tag("")
-                Divider()
-                ForEach(AudioDevices.inputDevices()) { device in
-                    Text(device.name).tag(device.uid)
-                }
+        Picker(selection: micBinding) {
+            ForEach(deviceStore.devices) { device in
+                Text(device.name).tag(device.uid)
             }
-            .labelsHidden()
-            .pickerStyle(.inline)
         } label: {
             Image(systemName: "mic")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(dictation.activeInputDeviceName.map { "Microphone: \($0)" } ?? "Choose microphone")
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .frame(maxWidth: 190)
+        .help("Microphone")
     }
 
+    /// Reads through to the resolved device so the built-in mic shows as the
+    /// selection by default, rather than an empty "automatic" row.
     private var micBinding: Binding<String> {
         Binding(
-            get: { session.settings.inputDeviceUID },
+            get: { deviceStore.resolvedUID(for: session.settings.inputDeviceUID) },
             set: { session.changeInputDevice(uid: $0) }
         )
     }
@@ -186,15 +183,15 @@ struct DictationView: View {
                 .frame(minHeight: 120)
                 .background(boxBackground)
                 .focused($outputFocused)
-                .overlay(alignment: .bottomLeading) {
+                .overlay(alignment: .topLeading) {
                     if rewriter.isPending {
-                        PendingIndicator()
-                            .padding(.leading, 10)
-                            .padding(.bottom, 9)
-                            .transition(.opacity)
+                        // Same insets as the placeholder below, so the mirrored
+                        // text lines up with what the editor actually draws.
+                        InlineCaret(text: rewriter.output)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 12)
                     }
                 }
-                .animation(.easeOut(duration: 0.18), value: rewriter.isPending)
                 .overlay(alignment: .topLeading) {
                     if rewriter.output.isEmpty {
                         Text("The polished version appears here. You can edit it directly.")
