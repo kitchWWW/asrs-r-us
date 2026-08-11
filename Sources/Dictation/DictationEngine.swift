@@ -61,6 +61,7 @@ final class DictationEngine: ObservableObject {
     private var lastRebuildAt: Date?
     /// System default input to put back when the session ends, if we changed it.
     private var defaultInputToRestore: AudioDeviceID?
+    private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
@@ -326,6 +327,8 @@ final class DictationEngine: ObservableObject {
         try audioEngine.start()
         audioStartedAt = Date()
 
+        installDefaultInputListener()
+
         // Connecting or removing an audio device invalidates the engine's
         // configuration; without rebuilding it the taps keep firing but deliver
         // nothing. This is what made plugging in headphones mid-session kill
@@ -337,6 +340,63 @@ final class DictationEngine: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in await self?.handleConfigurationChange() }
         }
+    }
+
+    /// Watches for another device seizing the system default input.
+    ///
+    /// Connecting headphones mid-session does not change *our* device, so the
+    /// engine's own configuration-change notification is not enough to catch it
+    /// -- but it does hand the default to the headset, which starves whatever
+    /// else is recording. This is the signal that matters.
+    private func installDefaultInputListener() {
+        guard defaultInputListener == nil else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in await self?.handleDefaultInputChanged() }
+        }
+        defaultInputListener = block
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
+        )
+    }
+
+    private func removeDefaultInputListener() {
+        guard let block = defaultInputListener else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
+        )
+        defaultInputListener = nil
+    }
+
+    /// Takes the default back and rebuilds when something else claims it.
+    private func handleDefaultInputChanged() async {
+        guard state == .recording, !isRestartingForConfigChange, let bound = boundDeviceID,
+              let current = AudioDevices.defaultInputDeviceID(), current != bound
+        else { return }
+
+        if let last = lastRebuildAt, Date().timeIntervalSince(last) > 10 { rebuildCount = 0 }
+        guard rebuildCount < 3 else {
+            log.error("default input kept changing; leaving capture alone")
+            return
+        }
+        rebuildCount += 1
+        lastRebuildAt = Date()
+
+        isRestartingForConfigChange = true
+        defer { isRestartingForConfigChange = false }
+
+        log.info("another device took the default input; reclaiming it and rebuilding")
+        await stop()
+        await start()
     }
 
     /// Rebuilds capture after the audio hardware changes underneath us,
@@ -392,6 +452,7 @@ final class DictationEngine: ObservableObject {
             NotificationCenter.default.removeObserver(configObserver)
         }
         configObserver = nil
+        removeDefaultInputListener()
 
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)

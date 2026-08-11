@@ -278,6 +278,10 @@ final class ProfileStore: ObservableObject {
     Leave these alone:
     - Hedges and qualifiers ("I think", "maybe", "sort of", "probably", \
     "a little"). They carry meaning. Keep them.
+    - The speaker's exact words. Never swap a word or phrase for a synonym, \
+    even a better one: "what is going on" must not become "what is happening", \
+    and "deploy" must not become "deployment". If a word is in the transcript \
+    and is a real word, it survives unchanged.
     - The speaker's own wording, slang, and register. Do not upgrade their \
     vocabulary or make casual speech formal.
     - Repetition used for emphasis, and the speaker's order of ideas.
