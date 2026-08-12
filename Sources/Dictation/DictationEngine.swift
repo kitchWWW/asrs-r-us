@@ -262,15 +262,23 @@ final class DictationEngine: ObservableObject {
         guard input.auAudioUnit.deviceID == device.id else {
             throw DictationError.deviceUnavailable(name: device.name)
         }
-        // Align the system default with the device we are about to record from.
-        // CoreAudio starves a non-default input while a Bluetooth headset holds
-        // the default -- about one buffer per ten seconds, which reads as "the
-        // microphone stopped working" the moment headphones connect. The
-        // previous value is restored when the session ends.
-        if let currentDefault = AudioDevices.defaultInputDeviceID(), currentDefault != device.id {
+        // Align the system default with the device we are about to record from,
+        // but *only* to escape the one situation that needs it: a Bluetooth
+        // headset holding the default input starves every other device --
+        // measured at roughly one buffer per ten seconds against a hundred.
+        //
+        // Deliberately narrow. Taking the default over is not free: a Bluetooth
+        // input can only run in the hands-free profile, which pins the headset
+        // to 16 kHz in both directions, so music playing through the same
+        // headset degrades audibly for as long as the stream is open. When the
+        // current default is not Bluetooth there is nothing to escape, and the
+        // system default is left exactly as the user set it.
+        if let currentDefault = AudioDevices.defaultInputDeviceID(),
+           currentDefault != device.id,
+           AudioDevices.isBluetooth(currentDefault) {
             if AudioDevices.setDefaultInputDevice(device.id) {
                 defaultInputToRestore = currentDefault
-                log.info("temporarily set system default input to \(device.name)")
+                log.info("took system default input from a Bluetooth device for \(device.name)")
                 // Give CoreAudio a moment to settle before opening the stream.
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }

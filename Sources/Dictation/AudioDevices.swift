@@ -16,6 +16,26 @@ enum AudioDevices {
         let uid: String
         let name: String
         let isBuiltIn: Bool
+        /// Bluetooth inputs are the reason any of the default-device juggling
+        /// exists, and the reason it has to be kept to a minimum: opening one
+        /// forces the headset into its hands-free profile, which drops both
+        /// directions to 16 kHz until the stream closes.
+        let isBluetooth: Bool
+    }
+
+    /// True for Bluetooth and Bluetooth LE transports.
+    static func isBluetooth(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport) == noErr
+        else { return false }
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
     }
 
     static func inputDevices() -> [Device] {
@@ -40,7 +60,8 @@ enum AudioDevices {
                 return nil
             }
             let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) ?? name
-            return Device(id: id, uid: uid, name: name, isBuiltIn: isBuiltIn(id))
+            return Device(id: id, uid: uid, name: name, isBuiltIn: isBuiltIn(id),
+                          isBluetooth: isBluetooth(id))
         }
     }
 
