@@ -5,6 +5,7 @@ import Foundation
 /// wants a frontier model instead.
 enum RewriteBackendKind: String, CaseIterable, Identifiable, Codable {
     case local
+    case bedrock
     case appleIntelligence
     case anthropic
 
@@ -13,6 +14,7 @@ enum RewriteBackendKind: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .local:             return "Local model (llama.cpp)"
+        case .bedrock:           return "Claude on Amazon Bedrock"
         case .appleIntelligence: return "Apple Intelligence"
         case .anthropic:         return "Anthropic API"
         }

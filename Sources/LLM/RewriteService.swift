@@ -54,6 +54,17 @@ final class RewriteService: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var lastRequestedTranscript = ""
 
+    /// One provider per profile, kept so the credential cache survives between
+    /// rewrites -- otherwise every rewrite would shell out to the AWS CLI.
+    private var credentialProviders: [String: AWSCredentialProvider] = [:]
+
+    private func credentialProvider(for profile: String) -> AWSCredentialProvider {
+        if let existing = credentialProviders[profile] { return existing }
+        let made = AWSCredentialProvider(profile: profile)
+        credentialProviders[profile] = made
+        return made
+    }
+
     init(
         settings: AppSettings,
         profiles: ProfileStore,
@@ -81,6 +92,12 @@ final class RewriteService: ObservableObject {
                 return .unavailable("Local model is still starting up…")
             }
             return .ready(server.client)
+        case .bedrock:
+            return .ready(BedrockClient(
+                modelID: settings.bedrockModelID,
+                region: settings.bedrockRegion,
+                credentials: credentialProvider(for: settings.awsProfile)
+            ))
         case .appleIntelligence:
             if let reason = AppleIntelligenceBackend.unavailableReason {
                 return .unavailable(reason)

@@ -1,6 +1,29 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @State private var bedrockTesting = false
+    @State private var bedrockResult: (ok: Bool, message: String)?
+
+    private func testBedrock() {
+        bedrockTesting = true
+        bedrockResult = nil
+        let client = BedrockClient(
+            modelID: settings.bedrockModelID,
+            region: settings.bedrockRegion,
+            credentials: AWSCredentialProvider(profile: settings.awsProfile)
+        )
+        Task {
+            do {
+                _ = try await client.ping()
+                bedrockResult = (true, "Connected — \(settings.bedrockModelID) is reachable.")
+            } catch {
+                bedrockResult = (false, (error as? LocalizedError)?.errorDescription
+                                 ?? error.localizedDescription)
+            }
+            bedrockTesting = false
+        }
+    }
+
     /// Bumped to recompute `logSummary` after the log is deleted.
     @State private var logRefresh = 0
 
@@ -50,6 +73,38 @@ struct SettingsView: View {
                 if settings.backend == .appleIntelligence {
                     appleIntelligenceRow
                 }
+            }
+
+            if settings.backend == .bedrock {
+            Section("Amazon Bedrock") {
+                TextField("Model", text: $settings.bedrockModelID)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Region", text: $settings.bedrockRegion)
+                    .textFieldStyle(.roundedBorder)
+                TextField("AWS profile", text: $settings.awsProfile)
+                    .textFieldStyle(.roundedBorder)
+                Text("Credentials come from the AWS CLI for this profile, so whichever account "
+                     + "it resolves to is the one billed. Sessions expire; if rewrites start "
+                     + "failing, run `aws login --profile \(settings.awsProfile)`.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Test connection") { testBedrock() }
+                        .controlSize(.small)
+                        .disabled(bedrockTesting)
+                    if bedrockTesting { ProgressView().controlSize(.small) }
+                    if let result = bedrockResult {
+                        Image(systemName: result.ok
+                              ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .foregroundStyle(result.ok ? .green : .orange)
+                        Text(result.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             }
 
             if settings.backend == .anthropic {

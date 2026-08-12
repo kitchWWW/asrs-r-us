@@ -23,6 +23,9 @@ final class AppSettings: ObservableObject {
         static let dictionary = "dictionary"
         static let techVocabulary = "includeTechVocabulary"
         static let logSessions = "logSessions"
+        static let bedrockModelID = "bedrockModelID"
+        static let bedrockRegion = "bedrockRegion"
+        static let awsProfile = "awsProfile"
     }
 
     @Published var apiKey: String {
@@ -83,6 +86,23 @@ final class AppSettings: ObservableObject {
     }
 
     /// Whether the built-in technical vocabulary is fed to the recognizer.
+    /// Bedrock inference-profile ID. The `us.` prefix is not optional -- the
+    /// bare model ID is rejected for on-demand throughput.
+    @Published var bedrockModelID: String {
+        didSet { defaults.set(bedrockModelID, forKey: Key.bedrockModelID) }
+    }
+
+    @Published var bedrockRegion: String {
+        didSet { defaults.set(bedrockRegion, forKey: Key.bedrockRegion) }
+    }
+
+    /// Which named AWS profile to bill. Named explicitly rather than left to
+    /// the default chain, because `default` and `work` on this machine point at
+    /// a different account than the one that should be paying.
+    @Published var awsProfile: String {
+        didSet { defaults.set(awsProfile, forKey: Key.awsProfile) }
+    }
+
     /// Whether finished sessions are appended to the local session log. The
     /// log is the only source of real dictation to test against, so this
     /// defaults on -- but everything spoken lands in a plaintext file, so it
@@ -185,7 +205,7 @@ final class AppSettings: ObservableObject {
             Key.debounceMilliseconds: 350,
             Key.restorePasteboard: true,
             Key.insertionMethod: TextInserter.Method.paste.rawValue,
-            Key.backend: RewriteBackendKind.local.rawValue,
+            Key.backend: RewriteBackendKind.bedrock.rawValue,
             // Benchmarked against Qwen2.5-1.5B and Apple Intelligence on the
             // real prompt: same rule-compliance as the 1.5B but noticeably
             // better structure and capitalisation, and it holds content the
@@ -198,6 +218,9 @@ final class AppSettings: ObservableObject {
             Key.dictionary: "",
             Key.techVocabulary: true,
             Key.logSessions: true,
+            Key.bedrockModelID: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            Key.bedrockRegion: "us-east-1",
+            Key.awsProfile: "personal",
         ])
         apiKey = Keychain.string(for: Key.apiKeyAccount)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
@@ -210,7 +233,7 @@ final class AppSettings: ObservableObject {
         ) ?? .paste
         backend = RewriteBackendKind(
             rawValue: defaults.string(forKey: Key.backend) ?? ""
-        ) ?? .local
+        ) ?? .bedrock
         localModelRepo = defaults.string(forKey: Key.localModelRepo)
             ?? "bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
         localPort = defaults.integer(forKey: Key.localPort)
@@ -219,6 +242,10 @@ final class AppSettings: ObservableObject {
         dictionary = defaults.string(forKey: Key.dictionary) ?? ""
         includeTechVocabulary = defaults.bool(forKey: Key.techVocabulary)
         logSessions = defaults.bool(forKey: Key.logSessions)
+        bedrockModelID = defaults.string(forKey: Key.bedrockModelID)
+            ?? "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        bedrockRegion = defaults.string(forKey: Key.bedrockRegion) ?? "us-east-1"
+        awsProfile = defaults.string(forKey: Key.awsProfile) ?? "personal"
         hotKey = defaults.data(forKey: Key.hotKey)
             .flatMap { try? JSONDecoder().decode(HotKeyBinding.self, from: $0) }
             ?? .f7
