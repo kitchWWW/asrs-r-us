@@ -8,10 +8,14 @@ import Foundation
 /// tokens and the panel already renders a whole snapshot at a time, exactly as
 /// it does for Apple Intelligence.
 ///
-/// The system prompt is marked for caching. It is ~2,500 tokens of rulebook and
-/// vocabulary that never changes between rewrites, and a session fires ten or
-/// more of them, so caching it is the difference between paying for the prompt
-/// once and paying for it every time the user pauses.
+/// The system prompt is marked for caching -- roughly 1,800 tokens of rulebook
+/// and vocabulary that never changes between rewrites, against ~100 tokens of
+/// actual transcript, resent every time the user pauses.
+///
+/// Measured caveat: this is a no-op on Haiku 4.5, which reports zero cache
+/// reads on Bedrock no matter how long the prompt is, while Opus 5 caches the
+/// identical request. The marking is kept because it costs nothing and starts
+/// working the moment the model setting is pointed at one that supports it.
 struct BedrockClient: RewriteBackend {
 
     enum ClientError: LocalizedError {
@@ -56,7 +60,7 @@ struct BedrockClient: RewriteBackend {
             // 400 rather than a warning, so sending it would break the moment
             // the model setting is pointed at anything current.
             // Sent as a block rather than a bare string purely so it can carry
-            // `cache_control`.
+            // `cache_control`. Ignored by models that do not cache.
             "system": [[
                 "type": "text",
                 "text": system,
