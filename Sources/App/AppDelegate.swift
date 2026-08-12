@@ -18,6 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)   // menu bar only, no Dock icon
 
+        // Create the log directory now rather than at the end of the first
+        // session, so a permissions problem surfaces at launch instead of
+        // silently swallowing the first transcript.
+        _ = SessionLog.shared.fileURL
+
         // Touch the tracker now so it starts observing app activations
         // immediately. Left lazy, it would not exist until the first menu click
         // and would have missed every activation before that -- including the
