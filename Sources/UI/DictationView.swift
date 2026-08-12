@@ -339,6 +339,7 @@ struct DictationView: View {
 
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
+                    enginePicker
                     profilePicker
                     useButton
                 }
@@ -367,6 +368,44 @@ struct DictationView: View {
             .buttonStyle(.glassControlProminent)
             .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
+    }
+
+    /// Where the rewrite runs. Like the profile picker, changing it re-runs
+    /// the rewrite immediately so the difference is visible on the text already
+    /// on screen rather than only on the next sentence.
+    private var enginePicker: some View {
+        Menu {
+            Picker("Engine", selection: engineBinding) {
+                ForEach(EngineChoice.catalog) { choice in
+                    VStack(alignment: .leading) {
+                        Text(choice.name)
+                        Text(choice.detail).font(.caption)
+                    }
+                    .tag(choice.backend)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.inline)
+        } label: {
+            pillLabel(EngineChoice.current(settings: session.settings)
+                .pillLabel(settings: session.settings))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.horizontal, 14)
+        .frame(height: GlassControlStyle.height)
+        .glassEffect(
+            .regular,
+            in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
+        )
+        .help("Where the rewrite runs")
+    }
+
+    private var engineBinding: Binding<RewriteBackendKind> {
+        Binding(
+            get: { session.settings.backend },
+            set: { session.switchBackend(to: $0) }
+        )
     }
 
     /// Switching profile re-runs the rewrite so the change is visible

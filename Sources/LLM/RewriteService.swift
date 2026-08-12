@@ -88,8 +88,18 @@ final class RewriteService: ObservableObject {
         switch settings.backend {
         case .local:
             guard server.state.isReady else {
-                if case let .failed(message) = server.state { return .unavailable(message) }
-                return .unavailable("Local model is still starting up…")
+                switch server.state {
+                case let .failed(message):
+                    return .unavailable(message)
+                case .preparingModel:
+                    return .unavailable("Downloading the local model…")
+                case .stopped:
+                    // Should be transient: selecting the local backend kicks off
+                    // a start. Saying so beats an indefinite "starting up".
+                    return .unavailable("Starting the local model server…")
+                default:
+                    return .unavailable("Local model is still starting up…")
+                }
             }
             return .ready(server.client)
         case .bedrock:

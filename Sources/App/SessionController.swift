@@ -70,6 +70,19 @@ final class SessionController: ObservableObject {
                 if case let .failed(message) = status { self?.lastError = message }
             }
             .store(in: &cancellables)
+
+        // Bring the local server up whenever the backend becomes local, no
+        // matter which control changed it. Previously this happened only at
+        // launch and only if local was already selected, so switching to it
+        // afterwards left the server stopped and every rewrite reporting that
+        // the model was "still starting up" forever.
+        settings.$backend
+            .filter { $0 == .local }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                Task { await self.server.start() }
+            }
+            .store(in: &cancellables)
     }
 
     var isRecording: Bool { dictation.isRecording }
@@ -248,6 +261,19 @@ final class SessionController: ObservableObject {
                 appVersion: version ?? "0"
             )
         )
+    }
+
+    /// Changing engine mid-session re-rewrites what has been said so far, so
+    /// the new engine's version replaces the old one on screen instead of the
+    /// change only showing up in whatever is dictated next.
+    func switchBackend(to kind: RewriteBackendKind) {
+        guard kind != settings.backend else { return }
+        settings.backend = kind
+        lastError = nil
+        lastUserEdit = nil
+        // The server is started by the `settings.$backend` observer in `init`,
+        // which also covers the Settings picker.
+        rewriter.flush(transcript: dictation.transcript)
     }
 
     /// Changing profile mid-session re-rewrites what has been said so far,
