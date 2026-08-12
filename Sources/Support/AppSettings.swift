@@ -218,7 +218,12 @@ final class AppSettings: ObservableObject {
             Key.dictionary: "",
             Key.techVocabulary: true,
             Key.logSessions: true,
-            Key.bedrockModelID: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
+            // only Claude on Bedrock that ignores `cache_control`. With the ~1,750
+            // token preamble cached, Sonnet 5 costs about 40% less per month than
+            // Haiku does uncached, and the adjudicator scores it the only engine
+            // with zero content errors across the nine cases.
+            Key.bedrockModelID: "us.anthropic.claude-sonnet-5",
             Key.bedrockRegion: "us-east-1",
             Key.awsProfile: "personal",
         ])
@@ -243,7 +248,7 @@ final class AppSettings: ObservableObject {
         includeTechVocabulary = defaults.bool(forKey: Key.techVocabulary)
         logSessions = defaults.bool(forKey: Key.logSessions)
         bedrockModelID = defaults.string(forKey: Key.bedrockModelID)
-            ?? "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            ?? "us.anthropic.claude-sonnet-5"
         bedrockRegion = defaults.string(forKey: Key.bedrockRegion) ?? "us-east-1"
         awsProfile = defaults.string(forKey: Key.awsProfile) ?? "personal"
         hotKey = defaults.data(forKey: Key.hotKey)
