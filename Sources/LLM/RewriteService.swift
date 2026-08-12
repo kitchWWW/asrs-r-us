@@ -28,6 +28,11 @@ final class RewriteService: ObservableObject {
     /// Called whenever a rewrite finishes cleanly, with the final text.
     var onRewriteCompleted: ((String) -> Void)?
 
+    /// How many rewrite requests this session has issued. Logged so a session
+    /// that churned through twenty rewrites is distinguishable from one that
+    /// needed a single pass.
+    private(set) var rewriteCount = 0
+
     private let settings: AppSettings
     private let profiles: ProfileStore
     private let editTracker: EditTracker
@@ -131,12 +136,14 @@ final class RewriteService: ObservableObject {
         lastRequestedTranscript = ""
         latestTranscript = ""
         settledTranscript = ""
+        rewriteCount = 0
         status = .idle
     }
 
     // MARK: - Core
 
     private func rewrite(transcript: String, force: Bool = false) async {
+        rewriteCount += 1
         let backend: RewriteBackend
         switch makeBackend() {
         case let .ready(value): backend = value

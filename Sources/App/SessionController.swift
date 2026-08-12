@@ -40,6 +40,15 @@ final class SessionController: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    // MARK: - Session logging
+    //
+    // Identity and timing for the session currently on screen, so the finished
+    // session can be written out as one record. `loggedCurrentSession` stops a
+    // session being written twice when the panel closes after an insertion.
+    private var sessionID = UUID()
+    private var sessionStartedAt = Date()
+    private var loggedCurrentSession = false
+
     init() {
         dictation.onTranscriptChange = { [weak self] transcript in
             self?.rewriter.transcriptChanged(transcript)
@@ -78,6 +87,9 @@ final class SessionController: ObservableObject {
         lastError = nil
         didInsert = false
         hasUserEdited = false
+        sessionID = UUID()
+        sessionStartedAt = Date()
+        loggedCurrentSession = false
         lastUserEdit = nil
         dictation.reset()
         rewriter.reset()
@@ -94,6 +106,10 @@ final class SessionController: ObservableObject {
     func clearAndRestart() {
         Task {
             await dictation.stop()
+            // Log before wiping: a cleared session is still a record of how the
+            // user speaks, and the fact that it was thrown away is itself a
+            // signal worth keeping.
+            logSession(outcome: .cleared)
             // Let any final result the flush produced land before wiping, so it
             // is discarded rather than arriving after the reset.
             await Task.yield()
@@ -104,6 +120,9 @@ final class SessionController: ObservableObject {
             lastUserEdit = nil
             hasUserEdited = false
             lastError = nil
+            sessionID = UUID()
+            sessionStartedAt = Date()
+            loggedCurrentSession = false
 
             await dictation.start()
         }
@@ -132,6 +151,9 @@ final class SessionController: ObservableObject {
         Task {
             await dictation.stop()
             rewriter.cancel()
+            // Only reached as `.abandoned` if nothing was inserted -- a used
+            // session has already logged itself with the outcome that matters.
+            logSession(outcome: .abandoned)
         }
     }
 
@@ -154,14 +176,14 @@ final class SessionController: ObservableObject {
     /// Escape hatch: insert the raw transcript instead of the rewrite, for when
     /// the model's version is not what the user wants.
     func useTranscript() async -> Bool {
-        await use(dictation.transcript)
+        await use(dictation.transcript, isTranscript: true)
     }
 
     var canInsertTranscript: Bool {
         !dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func use(_ candidate: String) async -> Bool {
+    private func use(_ candidate: String, isTranscript: Bool = false) async -> Bool {
         let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isInserting else { return false }
 
@@ -181,12 +203,51 @@ final class SessionController: ObservableObject {
                 restorePasteboard: settings.restorePasteboard
             )
             DictationHistory.shared.record(text, profileName: profiles.active.name)
+            logSession(outcome: isTranscript ? .usedTranscript : .used)
             didInsert = true
             return true
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return false
         }
+    }
+
+    // MARK: - Logging
+
+    /// Writes the session that is on screen to the local log, once.
+    ///
+    /// Deliberately records the transcript and the rewrite as different kinds
+    /// of thing: the transcript is evidence of how the user speaks, while the
+    /// rewrite is only evidence of what the model did with it. The edited
+    /// rewrite is stored separately again, because an edit is the one moment
+    /// the user tells us the model was wrong.
+    private func logSession(outcome: SessionLog.Outcome) {
+        guard !loggedCurrentSession else { return }
+        let transcript = dictation.transcript
+        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        loggedCurrentSession = true
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        SessionLog.shared.append(
+            SessionLog.Record(
+                id: sessionID,
+                startedAt: sessionStartedAt,
+                endedAt: Date(),
+                outcome: outcome,
+                transcript: transcript,
+                normalizedTranscript: TranscriptNormalizer.normalize(transcript),
+                rewrite: rewriter.output,
+                editedRewrite: hasUserEdited ? rewriter.output : nil,
+                profile: profiles.active.name,
+                backend: settings.backend.rawValue,
+                model: settings.backend == .local ? settings.localModelRepo : settings.model,
+                rewriteCount: rewriter.rewriteCount,
+                recordingSeconds: Date().timeIntervalSince(sessionStartedAt),
+                targetBundleID: targetApp?.bundleIdentifier,
+                inputDevice: dictation.activeInputDeviceName,
+                appVersion: version ?? "0"
+            )
+        )
     }
 
     /// Changing profile mid-session re-rewrites what has been said so far,

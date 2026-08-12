@@ -22,6 +22,7 @@ final class AppSettings: ObservableObject {
         static let hotKey = "hotKeyBinding"
         static let dictionary = "dictionary"
         static let techVocabulary = "includeTechVocabulary"
+        static let logSessions = "logSessions"
     }
 
     @Published var apiKey: String {
@@ -82,6 +83,14 @@ final class AppSettings: ObservableObject {
     }
 
     /// Whether the built-in technical vocabulary is fed to the recognizer.
+    /// Whether finished sessions are appended to the local session log. The
+    /// log is the only source of real dictation to test against, so this
+    /// defaults on -- but everything spoken lands in a plaintext file, so it
+    /// is a visible switch rather than a silent one.
+    @Published var logSessions: Bool {
+        didSet { defaults.set(logSessions, forKey: Key.logSessions) }
+    }
+
     @Published var includeTechVocabulary: Bool {
         didSet { defaults.set(includeTechVocabulary, forKey: Key.techVocabulary) }
     }
@@ -188,6 +197,7 @@ final class AppSettings: ObservableObject {
             Key.inputDeviceUID: "",
             Key.dictionary: "",
             Key.techVocabulary: true,
+            Key.logSessions: true,
         ])
         apiKey = Keychain.string(for: Key.apiKeyAccount)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
@@ -208,6 +218,7 @@ final class AppSettings: ObservableObject {
         inputDeviceUID = defaults.string(forKey: Key.inputDeviceUID) ?? ""
         dictionary = defaults.string(forKey: Key.dictionary) ?? ""
         includeTechVocabulary = defaults.bool(forKey: Key.techVocabulary)
+        logSessions = defaults.bool(forKey: Key.logSessions)
         hotKey = defaults.data(forKey: Key.hotKey)
             .flatMap { try? JSONDecoder().decode(HotKeyBinding.self, from: $0) }
             ?? .f7

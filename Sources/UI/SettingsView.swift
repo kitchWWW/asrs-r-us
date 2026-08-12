@@ -1,6 +1,16 @@
 import SwiftUI
 
 struct SettingsView: View {
+    /// Bumped to recompute `logSummary` after the log is deleted.
+    @State private var logRefresh = 0
+
+    private var logSummary: String {
+        _ = logRefresh
+        let count = SessionLog.shared.sessionCount
+        guard count > 0 else { return "No sessions logged yet" }
+        return "\(count) session\(count == 1 ? "" : "s") · \(SessionLog.shared.fileSizeDescription)"
+    }
+
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject var server: LlamaServerManager
     @State private var accessibilityGranted = HotKeyMonitor.hasAccessibilityPermission
@@ -86,6 +96,27 @@ struct SettingsView: View {
                     Button("Reset") { settings.hotKey = .f7 }
                         .controlSize(.small)
                         .disabled(settings.hotKey == .f7)
+                }
+            }
+
+            Section("Session log") {
+                Toggle("Keep a local log of my dictation", isOn: $settings.logSessions)
+                Text("Every session's transcript is appended to a plain-text file on this Mac, "
+                     + "so the way you actually speak can be tested against. Nothing is uploaded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(logSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show in Finder") { SessionLog.shared.revealInFinder() }
+                        .controlSize(.small)
+                    Button("Delete log") {
+                        SessionLog.shared.deleteLog()
+                        logRefresh &+= 1
+                    }
+                    .controlSize(.small)
                 }
             }
 
