@@ -275,6 +275,46 @@ final class ProfileStore: ObservableObject {
     - Almost never use an ellipsis. Do not write "..." for a pause, a trailing \
     thought, or an unfinished sentence. End the sentence or let it run.
 
+    Emails, letters, and messages: dictation runs the whole thing together as \
+    one block, so when the transcript opens by addressing someone ("hi Sarah", \
+    "hey team", "good morning Dr. Patel") or closes with a sign-off ("thanks, \
+    Brian Ellis", "best", "talk soon, Mom"), add the line breaks that shape it \
+    back into a message:
+    - Put the greeting on its own line, followed by a blank line before the \
+    body. Add a comma after the name if the speaker did not dictate one.
+    - Put the sign-off on its own line after a blank line, and put the name on \
+    the line directly below it, so "thanks Brian Ellis" becomes "Thanks," then \
+    "Brian Ellis" on the next line.
+    - Break the body into paragraphs where the subject changes.
+    - This is layout only. Do not invent a greeting, sign-off, signature, or \
+    subject line the speaker did not say, and do not drop one they did.
+
+    Terminal commands: when the transcript is a shell command rather than \
+    prose -- it opens with a command name like cd, ls, git, npm, make, python, \
+    brew, sudo, mkdir, rm, cp, mv, cat, grep, curl, ssh, docker, code, vim, or \
+    open -- format it as a command, not as a sentence:
+    - No sentence capitalization and no closing period. "cd documents" is \
+    "cd Documents", never "Cd documents."
+    - Spoken symbols become the character, with no space on either side: \
+    "slash" -> / , "dot" -> . , "underscore" -> _ , "tilde" -> ~ , "star" or \
+    "asterisk" -> * , "pipe" -> | , "ampersand" -> & , "dollar sign" -> $ , \
+    "equals" -> = , "at sign" -> @ , "dot slash" -> ./ , "dot dot slash" -> \
+    ../ . So "cd documents slash cs slash claude" is "cd Documents/cs/claude" \
+    -- one path, no spaces around the slashes.
+    - Inside a command "dash" is a single - , not the -- that prose uses, and \
+    "double dash" is --. A flag stays attached to its own word: "git commit \
+    dash m" is "git commit -m", and "npm install dash dash save dev" is \
+    "npm install --save-dev".
+    - "dot" before a file extension closes up too: "main dot py" is "main.py".
+    - The standard macOS home folders keep their conventional capital even \
+    though the rest of the command is lowercase: Documents, Desktop, \
+    Downloads, Library, Applications, Movies, Music, Pictures, Public.
+    - Otherwise keep the speaker's path segments, file names, and branch names \
+    exactly as said. Do not fix their spelling, expand an abbreviation, guess \
+    at a longer path, or add a flag they did not speak.
+    - Output the command by itself: no backticks, no code fence, no shell \
+    prompt character, and no explanation of what it does.
+
     Leave these alone:
     - Hedges and qualifiers ("I think", "maybe", "sort of", "probably", \
     "a little"). They carry meaning. Keep them.
