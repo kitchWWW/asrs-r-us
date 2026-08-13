@@ -50,55 +50,35 @@ final class EditTracker: ObservableObject {
         baseline = edited
     }
 
-    /// Re-applies recorded corrections to a fresh rewrite.
-    ///
-    /// The prompt already describes each edit, but honouring it is left to the
-    /// model, and a small local model frequently reintroduces the very wording
-    /// the user just fixed. Replaying the substitutions in code makes the
-    /// correction stick regardless of what the model returns.
-    func applying(to text: String) -> String {
-        var result = text
-        for edit in edits {
-            // Match on the word itself, ignoring punctuation captured by the
-            // word-boundary widening. A correction recorded as "Friday." must
-            // still apply when the new rewrite punctuates it as "Friday,".
-            let before = edit.before.trimmingCharacters(in: Self.edgePunctuation)
-            let after = edit.after.trimmingCharacters(in: Self.edgePunctuation)
-            guard !before.isEmpty, before != after else { continue }
-
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: before))\\b"
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-            let range = NSRange(result.startIndex..., in: result)
-            guard regex.firstMatch(in: result, range: range) != nil else { continue }
-
-            result = regex.stringByReplacingMatches(
-                in: result,
-                range: range,
-                withTemplate: NSRegularExpression.escapedTemplate(for: after)
-            )
-        }
-        return result
-    }
-
-    /// Punctuation and whitespace that can sit on either edge of a captured
-    /// span without being part of the word the user actually corrected.
-    private static let edgePunctuation = CharacterSet(charactersIn: " \t.,;:!?\"')(")
-
     /// The block appended to the rewrite prompt describing user corrections.
+    ///
+    /// This is now the only mechanism carrying corrections forward. Earlier
+    /// versions also replayed the substitutions over the model's output in
+    /// code, as insurance against a small local model reintroducing the
+    /// wording the user had just fixed. That insurance cost more than it paid:
+    /// the replay was a global regex, so a one-off correction such as "the" ->
+    /// "a" rewrote every subsequent "the" in the text as well.
     var promptContext: String? {
         guard !edits.isEmpty else { return nil }
         let lines = edits.map { edit -> String in
-            let before = edit.before.isEmpty ? "(nothing)" : "\"\(edit.before)\""
-            let after = edit.after.isEmpty ? "(deleted)" : "\"\(edit.after)\""
-            return "- The user changed \(before) to \(after)."
+            switch (edit.before.isEmpty, edit.after.isEmpty) {
+            case (true, _): return "- The user inserted \"\(edit.after)\"."
+            case (_, true): return "- The user deleted \"\(edit.before)\"."
+            default: return "- The user changed \"\(edit.before)\" to \"\(edit.after)\"."
+            }
         }
         return """
-        The user manually corrected your previous output:
+        The user manually corrected your previous output. These corrections are \
+        binding and take priority over everything else in this prompt:
         \(lines.joined(separator: "\n"))
 
-        Honor these corrections. They reflect what the user actually wants -- \
-        preserve them in your rewrite and apply the same preference elsewhere \
-        when it is relevant.
+        - Apply every one of them. Where the transcript still carries the \
+        wording on the left, your output must carry the wording on the right.
+        - Honour them even when the transcript plainly says otherwise. The user \
+        has seen both versions and is fixing a recognition error or your \
+        wording; the transcript is not the authority here, they are.
+        - Apply the same preference to comparable wording elsewhere in the text.
+        - Never reintroduce the corrected-away wording anywhere in your output.
         """
     }
 

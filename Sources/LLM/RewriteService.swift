@@ -224,15 +224,18 @@ final class RewriteService: ObservableObject {
 
                 let rewritten = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !rewritten.isEmpty {
-                    // Replay the user's corrections onto the new text, so an
-                    // edit survives even when the model ignores the note about
-                    // it in the prompt.
-                    let finalText = self.editTracker.applying(to: rewritten)
+                    // Corrections reach the model through the prompt only --
+                    // see `EditTracker.promptContext`. They used to also be
+                    // replayed over the result in code, which a capable model
+                    // no longer needs and which could corrupt a rewrite that
+                    // was already correct: the replay was a global regex, so a
+                    // one-off fix like "the" -> "a" rewrote every later "the"
+                    // as well.
                     if !self.isUserEditing() {
-                        self.output = finalText
-                        self.editTracker.setBaseline(finalText)
+                        self.output = rewritten
+                        self.editTracker.setBaseline(rewritten)
                     }
-                    self.onRewriteCompleted?(finalText)
+                    self.onRewriteCompleted?(rewritten)
                 }
                 // This transcript is now reflected on screen; the pending
                 // indicator can clear unless more speech has arrived since.
