@@ -261,6 +261,29 @@ final class SessionController: ObservableObject {
                 appVersion: version ?? "0"
             )
         )
+
+        // Counters are recorded whether or not transcript logging is on: the
+        // log holds everything the user said and is a real privacy decision,
+        // while a count of how often they said something is not.
+        let stats = StatsStore.shared
+        stats.record(
+            date: sessionStartedAt,
+            transcript: transcript,
+            rewrite: rewriter.output,
+            outcome: outcome,
+            profile: profiles.active.name,
+            engine: settings.backend.rawValue,
+            bundleID: targetApp?.bundleIdentifier,
+            recordingSeconds: Date().timeIntervalSince(sessionStartedAt),
+            rewriteCount: rewriter.rewriteCount,
+            wasEdited: hasUserEdited
+        )
+        // Recorded here rather than as the user types: `EditTracker` collapses
+        // consecutive keystrokes in the same region, so only at the end of the
+        // session does an edit hold the word the user actually settled on.
+        for edit in editTracker.edits {
+            stats.recordEdit(before: edit.before, after: edit.after)
+        }
     }
 
     /// Changing engine mid-session re-rewrites what has been said so far, so

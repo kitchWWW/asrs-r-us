@@ -197,6 +197,10 @@ final class RewriteService: ObservableObject {
         streamTask = Task { [weak self] in
             guard let self else { return }
             var accumulated = ""
+            // Timed from just before the request so the figure includes
+            // connection setup, which is exactly what the wait feels like.
+            let startedAt = Date()
+            var firstChunkAt: Date?
             do {
                 // Accumulate silently. Writing each chunk straight to `output`
                 // blanks the box and retypes it on every rewrite, which reads as
@@ -204,9 +208,19 @@ final class RewriteService: ObservableObject {
                 // previous text stays put until the replacement is complete.
                 for try await chunk in backend.streamText(system: system, user: user) {
                     try Task.checkCancellation()
+                    if firstChunkAt == nil { firstChunkAt = Date() }
                     accumulated += chunk
                 }
                 guard !Task.isCancelled else { return }
+
+                // Only completed rewrites are timed. A superseded one is
+                // abandoned mid-stream, so its duration measures how fast the
+                // user kept talking, not how fast the engine is.
+                StatsStore.shared.recordLatency(
+                    engine: self.settings.backend.rawValue,
+                    firstTokenMS: firstChunkAt.map { Int($0.timeIntervalSince(startedAt) * 1000) },
+                    totalMS: Int(Date().timeIntervalSince(startedAt) * 1000)
+                )
 
                 let rewritten = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !rewritten.isEmpty {

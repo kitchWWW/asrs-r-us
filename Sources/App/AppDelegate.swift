@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // silently swallowing the first transcript.
         _ = SessionLog.shared.fileURL
 
+        // One-time import of whatever the session log already holds, so the
+        // Statistics tab opens with real history instead of zeros on a machine
+        // that has been dictating for months. No-ops after the first run.
+        StatsStore.shared.backfillFromSessionLogIfNeeded()
+
         // Touch the tracker now so it starts observing app activations
         // immediately. Left lazy, it would not exist until the first menu click
         // and would have missed every activation before that -- including the
@@ -46,9 +51,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.showPanel()
             }
         }
+
+        // Same idea for the Settings window, which is otherwise only reachable
+        // through the status-item menu -- awkward to drive when checking a
+        // settings tab renders correctly.
+        if ProcessInfo.processInfo.environment["VOICEEDIT_SETTINGS"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.showSettings()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Saves are debounced, so a quit within the window would drop the last
+        // session's counters. Flush synchronously here.
+        StatsStore.shared.saveNow()
         session.dictation.restoreDefaultInputIfNeeded()
         session.server.stop()
         hotKey.stop()

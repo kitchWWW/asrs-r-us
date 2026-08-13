@@ -54,6 +54,7 @@ struct SettingsView: View {
             general.tabItem { Label("General", systemImage: "gearshape") }
             ProfilesSettingsView().tabItem { Label("Profiles", systemImage: "person.2") }
             DictionarySettingsView().tabItem { Label("Dictionary", systemImage: "character.book.closed") }
+            StatisticsSettingsView().tabItem { Label("Statistics", systemImage: "chart.bar") }
         }
         .frame(width: 620, height: 460)
         .onAppear { accessibilityGranted = HotKeyMonitor.hasAccessibilityPermission }
