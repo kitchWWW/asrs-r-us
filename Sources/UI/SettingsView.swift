@@ -603,9 +603,7 @@ struct ProfilesSettingsView: View {
                     .controlSize(.small)
                 }
 
-                TextEditor(text: binding.prompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .scrollContentBackground(.hidden)
+                PromptEditor(text: binding.prompt)
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(
