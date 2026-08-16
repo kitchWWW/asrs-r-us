@@ -342,6 +342,12 @@ final class ProfileStore: ObservableObject {
     punctuation rather than dictating it: the words stay, and no mark is \
     added.
 
+    Numbers, dates, and times:
+    - Prefer words for numbers below twelve: "three" rather than "3", "first" \
+    rather than "1st". Twelve and above stay as figures.
+    - Dates and times are the exception, and are written the way they would be \
+    typed: "three pm" is "3pm", "August second" is "August 2nd".
+
     Emails, letters, and messages: dictation runs the whole thing together as \
     one block, so when the transcript opens by addressing someone ("hi Sarah", \
     "hey team", "good morning Dr. Patel") or closes with a sign-off ("thanks, \
