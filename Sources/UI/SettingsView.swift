@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject private var appProfiles = AppProfileMap.shared
+    @ObservedObject private var profileStore = ProfileStore.shared
     @State private var bedrockTesting = false
     @State private var bedrockResult: (ok: Bool, message: String)?
 
@@ -184,6 +186,44 @@ struct SettingsView: View {
                 }
                 if settings.insertionMethod == .paste {
                     Toggle("Restore my clipboard afterwards", isOn: $settings.restorePasteboard)
+                }
+            }
+
+            Section("Profile by app") {
+                if appProfiles.recentApps.isEmpty {
+                    Text("Apps you dictate into appear here, each with the profile "
+                         + "it should use. Nothing is listed until you have dictated "
+                         + "somewhere at least once.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(appProfiles.recentApps) { app in
+                        Picker(selection: appProfiles.binding(
+                            for: app.bundleID, fallback: profileStore.defaultProfileID
+                        )) {
+                            ForEach(profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id)
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if let icon = AppProfileMap.icon(for: app.bundleID) {
+                                    Image(nsImage: icon)
+                                        .resizable()
+                                        .frame(width: 16, height: 16)
+                                }
+                                Text(app.name)
+                            }
+                        }
+                        .contextMenu {
+                            Button("Remove from list") { appProfiles.forget(app.bundleID) }
+                        }
+                    }
+                    Text("The profile switches when dictation starts, so the panel's "
+                         + "own profile menu still overrides it for that session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 

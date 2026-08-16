@@ -10,6 +10,7 @@ final class SessionController: ObservableObject {
     let settings = AppSettings.shared
     let dictation = DictationEngine()
     let profiles = ProfileStore.shared
+    let appProfiles = AppProfileMap.shared
     let editTracker = EditTracker()
     lazy var server = LlamaServerManager(settings: settings)
     lazy var rewriter = RewriteService(
@@ -100,6 +101,7 @@ final class SessionController: ObservableObject {
     /// focus, so we know where to paste.
     func beginSession(target: NSRunningApplication?) {
         targetApp = target
+        applyProfile(for: target)
         lastError = nil
         didInsert = false
         hasUserEdited = false
@@ -111,6 +113,22 @@ final class SessionController: ObservableObject {
         rewriter.reset()
         editTracker.reset()
         Task { await dictation.start() }
+    }
+
+    /// Switches to the profile this app is mapped to, and remembers the app so
+    /// it appears in Settings with a dropdown of its own.
+    ///
+    /// Done here, once, rather than continuously: the panel's own profile menu
+    /// has to keep working, and a mapping that reasserted itself mid-session
+    /// would undo the user's pick the moment they made it.
+    private func applyProfile(for target: NSRunningApplication?) {
+        guard let target else { return }
+        appProfiles.record(target, fallback: profiles.defaultProfileID)
+        guard let bundleID = target.bundleIdentifier,
+              let assigned = appProfiles.profileID(for: bundleID, among: profiles.profiles),
+              assigned != profiles.selectedID
+        else { return }
+        profiles.selectedID = assigned
     }
 
     /// Wipes the session and starts listening again from scratch.

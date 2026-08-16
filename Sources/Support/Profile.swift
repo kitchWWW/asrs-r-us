@@ -46,6 +46,14 @@ final class ProfileStore: ObservableObject {
 
     var activePrompt: String { active.prompt }
 
+    /// The profile a newly-seen app is assigned to.
+    ///
+    /// Found by name rather than by position, so reordering the sidebar does
+    /// not quietly change what every unassigned app resolves to.
+    var defaultProfileID: Profile.ID {
+        (profiles.first { $0.name == "Default" } ?? profiles[0]).id
+    }
+
     private init() {
         let stored: [Profile] = {
             guard let data = UserDefaults.standard.data(forKey: Key.profiles),
