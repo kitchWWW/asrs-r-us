@@ -280,6 +280,10 @@ final class ProfileStore: ObservableObject {
     other.
     - Almost never use an ellipsis. Do not write "..." for a pause, a trailing \
     thought, or an unfinished sentence. End the sentence or let it run.
+    - If you are working on a short fragment, or the first sentence is \
+    incomplete, consider if the first half of the sentence has been written \
+    somewhere else, and if so, leave the beginning uncapitalized. NOTE: the ASR \
+    will always capitalize the first word, so you cannot trust that as the start.
 
     Homophones and mistranscriptions: speech-to-text writes the commonest \
     spelling of a sound, so a wrong word arrives fully spelled and \
