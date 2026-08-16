@@ -39,7 +39,7 @@ final class AppProfileMap: ObservableObject {
     private enum Key {
         static let recents = "appProfileRecents"
         static let assignments = "appProfileAssignments"
-        static let backfilled = "appProfileBackfilledV1"
+        static let backfilled = "appProfileBackfilledV2"
     }
 
     private let defaults = UserDefaults.standard
@@ -109,7 +109,10 @@ final class AppProfileMap: ObservableObject {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
             return bundleID
         }
-        return FileManager.default.displayName(atPath: url.path)
+        let name = FileManager.default.displayName(atPath: url.path)
+        // `displayName` keeps the ".app" when the user has Finder set to show
+        // all file extensions, which is how "Terminal.app" ended up in the list.
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
     }
 
     /// Notes that a session is going into `app`, assigning it `fallback` the

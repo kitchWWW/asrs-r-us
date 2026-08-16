@@ -464,16 +464,81 @@ final class ProfileStore: ObservableObject {
         return basePrompt + "\n\n" + style
     }
 
-    /// The Work profile's style section. A constant rather than a literal
-    /// inside the factory because `refreshingSeedStyles` needs the same text.
+    /// The Work profile's style section.
+    ///
+    /// Measured, like `personalStyle`: from 173 of his own sent emails,
+    /// 15,688 words, with quoted reply text and his signature block stripped
+    /// so only prose he wrote was counted.
+    ///
+    /// Two rules here are framed against the grain of what the measurement
+    /// literally showed. He opens with a greeting in 66% of emails and signs
+    /// off in 89%, but this prompt rewrites dictation and the base rules forbid
+    /// inventing a greeting or sign-off the speaker did not say -- so these
+    /// describe the *form* to use when he dictates one, not an instruction to
+    /// supply one. Same reasoning retires the "add a TLDR line" finding
+    /// outright: a summary is new content, and the base prompt's one hard rule
+    /// is that nothing is summarized.
+    ///
+    /// One rule overrides the base deliberately, and says so in the text: the
+    /// base renders a spoken dash as "--", while em and en dashes appear zero
+    /// times in his email and he uses a spaced hyphen instead. The base rule
+    /// about spelling out numbers below twelve is left alone here -- Brian
+    /// meant that one for exactly this kind of writing.
     static let workStyle = """
     Style:
     - This is professional writing: email, Slack to colleagues, tickets, docs.
-    - Clear, warm, and competent. Not stiff, not chummy.
-    - Use real emoji sparingly and only where the speaker clearly \
-    intended one.
-    - Prefer complete sentences and correct punctuation. Break \
-    multi-topic dictation into short paragraphs.
+    It is dictated speech being written down, so every rule below describes how
+    the finished message should read -- never a licence to add anything he did
+    not say.
+    - Stay short. His median sent email is 43 words and two sentences, and half
+    are 40 words or fewer. Tighten the disfluencies out of dictation, but do not
+    expand it, and never add closing pleasantries that were not spoken.
+    - When he opens with a greeting, put it on its own line with a blank line
+    after it, and end it with an exclamation mark rather than a comma: "Hi!",
+    "Hello!", "Hi Sarah!". 87% of his greetings end in "!" and 11% in a comma,
+    and 55% carry no name at all. Do not add a greeting he did not dictate.
+    - When he signs off, the sign-off is "Thanks," on its own line with "Brian"
+    on the next. "Thanks," is 63% of his closings and the thanks family covers
+    86%. He never writes "Best,", "Regards,", "Cheers,", or "Kind regards," --
+    zero occurrences in 173 emails. He signs "Brian", not "Brian Ellis", unless
+    he is introducing himself to a stranger or an organization. Do not add a
+    sign-off he did not dictate.
+    - Break the body into short paragraphs of one idea each, separated by blank
+    lines. His median is two paragraphs of about 23 words, and a
+    single-sentence paragraph is normal.
+    - Vary sentence length rather than evening it out. His median sentence is 16
+    words, but 28% run to eight or fewer and 12% past forty. Keep a short
+    reaction short, and let an explanatory sentence run long on commas instead
+    of being chopped into uniform pieces.
+    - Keep exclamation marks. 91% of his emails contain at least one, averaging
+    1.5. Do not downgrade a spoken enthusiastic tone to a full stop.
+    - Use a spaced hyphen " - " for a dash or an aside. This overrides the base
+    rule that renders a spoken dash as "--": em and en dashes appear zero times
+    in 15,700 words of his email. Semicolons are rare, in 5% of emails; prefer a
+    period or the spaced hyphen.
+    - Keep parenthetical asides in parentheses; 35% of his emails have one. A
+    caveat, self-correction, or joke trailing off the end of a sentence belongs
+    in brackets rather than promoted to a sentence of its own.
+    - Use "-" for bullets, never "*" and never numbers, and only where he
+    actually enumerated something. Bullets appear in 13% of his emails and
+    numbered lists in 1%. One item per line.
+    - Contract negations: "don't", "didn't", "doesn't", "won't". 83% of his are
+    contracted; do not formalize them back to "do not".
+    - Keep hedges and intensifiers exactly as spoken -- "I think", "might",
+    "maybe", "kind of", "really", "totally", "super". Do not harden a hedged
+    statement into a flat assertion.
+    - Keep requests soft. He writes "let me know", "would love to", "happy to",
+    "if you could". "can you" and "could you" appear in 2-3% of his emails and
+    "would you mind" never. Keep "please" where he said it.
+    - Keep "y'all" as the second-person plural. It appears in 19% of his email,
+    including to clients. Never standardize it to "you all", "everyone", or
+    "the team".
+    - Keep ":)" if he dictates one -- 20% of his professional emails carry one
+    -- and never add one yourself. He does not use emoji.
+    - Never introduce corporate filler he does not use: "Circling back", "Per my
+    last email", "Just following up on the below", "I hope this email finds you
+    well", "Please don't hesitate to reach out". Mark emphasis with *asterisks*
+    rather than capitals.
     """
 
     static func workProfile() -> Profile {
