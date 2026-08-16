@@ -194,15 +194,37 @@ struct DictationView: View {
     private var transcriptBox: some View {
         VStack(alignment: .leading, spacing: 4) {
             boxLabel("Transcript", systemImage: "waveform")
-            ScrollView {
-                Text(attributedTranscript)
-                    .font(.system(size: 13))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(attributedTranscript)
+                        .font(.system(size: 13))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    // A zero-height anchor to aim at. Scrolling to the text
+                    // itself aligns its *top*, which for a transcript taller
+                    // than the box is precisely the wrong end.
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.transcriptBottomID)
+                }
+                .frame(minHeight: 90)
+                .background(boxBackground)
+                // The transcript is append-only and grows while the user is
+                // still speaking, so anything past the fold is what they just
+                // said -- the part most worth seeing. Follow both halves: the
+                // volatile tail changes on its own between finalizations.
+                .onChange(of: dictation.finalizedText) { scrollTranscriptToBottom(proxy) }
+                .onChange(of: dictation.volatileText) { scrollTranscriptToBottom(proxy) }
             }
-            .frame(minHeight: 90)
-            .background(boxBackground)
+        }
+    }
+
+    private static let transcriptBottomID = "transcript-bottom"
+
+    private func scrollTranscriptToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.12)) {
+            proxy.scrollTo(Self.transcriptBottomID, anchor: .bottom)
         }
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -236,11 +237,10 @@ struct SettingsView: View {
             }
 
             Section("Session log") {
+                // Every session's transcript is appended to a plain-text file on
+                // this Mac, so the way the user actually speaks can be tested
+                // against. Nothing is uploaded.
                 Toggle("Keep a local log of my dictation", isOn: $settings.logSessions)
-                Text("Every session's transcript is appended to a plain-text file on this Mac, "
-                     + "so the way you actually speak can be tested against. Nothing is uploaded.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 HStack {
                     Text(logSummary)
                         .font(.caption)
@@ -257,14 +257,13 @@ struct SettingsView: View {
 
                 Divider()
 
+                // Saves what the recogniser heard, linked to its transcript in
+                // the log, so a session can be re-run through a different
+                // recogniser instead of being said again. Recorded losslessly
+                // and compressed to Opus once the session ends -- about 150 KB a
+                // minute, a quarter of the original and measurably no worse to
+                // transcribe from. It never leaves this Mac.
                 Toggle("Keep a local audio transcript", isOn: $settings.recordSessionAudio)
-                Text("Saves what the recogniser heard, linked to its transcript in the log, "
-                     + "so a session can be re-run through a different recogniser instead of "
-                     + "being said again. Recorded losslessly and compressed to Opus once the "
-                     + "session ends — about 150 KB a minute, a quarter of the original and "
-                     + "measurably no worse to transcribe from. It never leaves this Mac.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Picker("Keep recordings for", selection: $settings.audioRetentionDays) {
                     Text("30 days").tag(30)
                     Text("90 days").tag(90)
@@ -277,12 +276,14 @@ struct SettingsView: View {
                     Text("5 GB").tag(5120)
                     Text("No limit").tag(0)
                 }
-                Text("Past the ceiling it thins the folder at random rather than deleting the "
-                     + "oldest, so what is left still spans the whole year instead of "
-                     + "collapsing into the last few weeks.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Deliberately undescribed: the trade-offs between these are
+                // long, and they live on `SessionAudio.prune` where the code
+                // that acts on them is.
+                Picker("Eviction policy", selection: $settings.audioEvictionPolicy) {
+                    ForEach(AudioEvictionPolicy.allCases) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
                 HStack {
                     Text(audioSummary)
                         .font(.caption)
@@ -317,36 +318,13 @@ struct SettingsView: View {
             }
 
             Section("Where it all lives") {
-                LabeledContent("Transcripts") {
-                    Text(SessionLog.shared.fileURL.path(percentEncoded: false))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                LabeledContent("Annotated") {
-                    Text(SessionAudio.annotatedDirectory.path(percentEncoded: false))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                LabeledContent("Recordings") {
-                    Text(SessionAudio.directory.path(percentEncoded: false))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                LabeledContent("Statistics") {
-                    Text(StatsStore.shared.fileURL.path(percentEncoded: false))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                Text("Nothing here is ever uploaded. Every path is inside your own "
-                     + "Application Support folder, and each one has a delete button above.")
+                pathRow("Transcripts", url: SessionLog.shared.fileURL)
+                pathRow("Annotated", url: SessionAudio.annotatedDirectory)
+                pathRow("Recordings", url: SessionAudio.directory)
+                pathRow("Statistics", url: StatsStore.shared.fileURL)
+                Text("Click any path to show it in Finder. Nothing here is ever uploaded — "
+                     + "every path is inside your own Application Support folder, and each "
+                     + "one has a delete button above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -354,6 +332,57 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { if settings.hasAPIKey, keyStatus == .untested { validateNow() } }
+    }
+
+    /// One row of "Where it all lives": a path that reveals itself in Finder.
+    ///
+    /// These used to be inert text. Clicking a path shown in a settings pane is
+    /// the obvious thing to try, and doing nothing reads as broken -- so a click
+    /// now does exactly what the "Show in Finder" buttons further up do, for the
+    /// same locations.
+    private func pathRow(_ label: String, url: URL) -> some View {
+        LabeledContent(label) {
+            Button {
+                Self.reveal(url)
+            } label: {
+                Text(url.path(percentEncoded: false))
+                    .font(.caption.monospaced())
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(.link)
+            .help("Show in Finder")
+            // Wrapping the path in a button costs `.textSelection`, which was
+            // how it got copied before. Hand that back rather than quietly
+            // taking it away.
+            .contextMenu {
+                Button("Copy Path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        url.path(percentEncoded: false), forType: .string
+                    )
+                }
+                Button("Show in Finder") { Self.reveal(url) }
+            }
+        }
+    }
+
+    /// Reveals `url` in Finder, falling back to the nearest ancestor that exists.
+    ///
+    /// `activateFileViewerSelecting` silently does nothing for a path that is
+    /// not there, and some of these are only created on first use -- the
+    /// recordings folder does not exist until something has been recorded. A
+    /// click that appears to do nothing is the very thing this is fixing, so
+    /// show the closest location that is actually on disk instead.
+    private static func reveal(_ url: URL) {
+        let fileManager = FileManager.default
+        var target = url
+        while !fileManager.fileExists(atPath: target.path(percentEncoded: false)) {
+            let parent = target.deletingLastPathComponent()
+            guard parent != target else { return }
+            target = parent
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
     // MARK: - Apple Intelligence

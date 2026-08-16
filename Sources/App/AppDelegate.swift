@@ -178,6 +178,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
+        // Settings first. The lists below it -- profiles, and up to ten recent
+        // dictations -- change length every time the menu opens, so anything
+        // underneath them sits at a different height on each visit. Only the
+        // top of the menu is a fixed target.
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(showSettings),
+            keyEquivalent: ""
+        )
+        settings.target = self
+        menu.addItem(settings)
+
+        menu.addItem(.separator())
+
         let start = NSMenuItem(
             title: "Start Dictation",
             action: #selector(showPanel),
@@ -198,16 +212,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addProfileItems(to: menu)
         menu.addItem(.separator())
         addHistoryItems(to: menu)
-        menu.addItem(.separator())
-
-        let settings = NSMenuItem(
-            title: "Settings…",
-            action: #selector(showSettings),
-            keyEquivalent: ""
-        )
-        settings.target = self
-        menu.addItem(settings)
-
         menu.addItem(.separator())
 
         let quit = NSMenuItem(

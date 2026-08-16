@@ -300,7 +300,8 @@ final class SessionController: ObservableObject {
             SessionAudio.compress(url)
             let days = await AppSettings.shared.audioRetentionDays
             let cap = await Int64(AppSettings.shared.audioMaxMegabytes) * 1_048_576
-            SessionAudio.prune(olderThanDays: days, maxBytes: cap)
+            let policy = await AppSettings.shared.audioEvictionPolicy
+            SessionAudio.prune(olderThanDays: days, maxBytes: cap, policy: policy)
         }
         return url.deletingPathExtension().lastPathComponent
     }

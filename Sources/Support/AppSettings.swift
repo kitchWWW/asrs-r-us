@@ -28,6 +28,7 @@ final class AppSettings: ObservableObject {
         static let recordSessionAudio = "recordSessionAudio"
         static let audioRetentionDays = "audioRetentionDays"
         static let audioMaxMegabytes = "audioMaxMegabytes"
+        static let audioEvictionPolicy = "audioEvictionPolicy"
         static let recognizer = "recognizer"
         static let fastRecognition = "fastRecognition"
         static let bedrockModelID = "bedrockModelID"
@@ -176,6 +177,11 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(audioMaxMegabytes, forKey: Key.audioMaxMegabytes) }
     }
 
+    /// Which recordings are given up first once the ceiling is reached.
+    @Published var audioEvictionPolicy: AudioEvictionPolicy {
+        didSet { defaults.set(audioEvictionPolicy.rawValue, forKey: Key.audioEvictionPolicy) }
+    }
+
     @Published var logSessions: Bool {
         didSet { defaults.set(logSessions, forKey: Key.logSessions) }
     }
@@ -293,6 +299,7 @@ final class AppSettings: ObservableObject {
             Key.recordSessionAudio: true,
             Key.audioRetentionDays: 0,
             Key.audioMaxMegabytes: 5120,
+            Key.audioEvictionPolicy: AudioEvictionPolicy.timeDiverse.rawValue,
             Key.recognizer: RecognizerChoice.punctuated.rawValue,
             Key.fastRecognition: true,
             // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
@@ -341,6 +348,9 @@ final class AppSettings: ObservableObject {
         recordSessionAudio = defaults.bool(forKey: Key.recordSessionAudio)
         audioRetentionDays = defaults.integer(forKey: Key.audioRetentionDays)
         audioMaxMegabytes = defaults.integer(forKey: Key.audioMaxMegabytes)
+        audioEvictionPolicy = AudioEvictionPolicy(
+            rawValue: defaults.string(forKey: Key.audioEvictionPolicy) ?? ""
+        ) ?? .timeDiverse
         fastRecognition = defaults.bool(forKey: Key.fastRecognition)
         recognizer = RecognizerChoice(
             rawValue: defaults.string(forKey: Key.recognizer) ?? ""
