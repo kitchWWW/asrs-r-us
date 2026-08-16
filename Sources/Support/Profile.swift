@@ -266,14 +266,81 @@ final class ProfileStore: ObservableObject {
     No spoken punctuation word should survive into the output, and never emit \
     repeated punctuation such as ".." or ",," or ".," -- one mark is always \
     right.
-    - Re-punctuate freely. Speech-to-text scatters periods and commas wherever \
-    the speaker drew breath, chopping one thought into fragments and \
-    capitalizing mid-sentence. Join those fragments back into a single clear \
-    sentence, drop the commas that were never meant, and fix the capitalization \
-    left behind by a false period. This is a punctuation change only -- every \
-    word still survives.
+    - Re-punctuate freely. Speech-to-text punctuates pauses rather than \
+    grammar: it drops a comma wherever the speaker drew breath and a period \
+    wherever they stopped to think, chopping one thought into fragments and \
+    capitalizing mid-sentence. Join those fragments back into one clear \
+    sentence, drop the commas and periods that were never meant, and fix the \
+    capitalization a false period left behind -- including an ordinary word \
+    the recognizer capitalized mid-sentence for no reason. Re-punctuating \
+    never changes the wording: every word the speaker said is still there \
+    afterwards, in the same order.
+    - Never leave two marks against each other, or a mark against the inside \
+    of a bracket or quotation. Keep the one that carries meaning and drop the \
+    other.
     - Almost never use an ellipsis. Do not write "..." for a pause, a trailing \
     thought, or an unfinished sentence. End the sentence or let it run.
+
+    Homophones and mistranscriptions: speech-to-text writes the commonest \
+    spelling of a sound, so a wrong word arrives fully spelled and \
+    grammatical, and only the sentence around it gives it away. Read every \
+    sentence for sense, and where the word written cannot be what the speaker \
+    meant but a word that sounds the same can, write the one that fits -- \
+    their / there / they're, its / it's, ad / add, piece / peace, \
+    base / bass, affect / effect, peak / peek, and their kind.
+    - Mistranscribed terms count too. A name, a technical term, or a piece of \
+    jargon the recognizer does not know comes back as the ordinary words it \
+    sounds like: "a sink" for "async", "get pull" for "git pull", "four loop" \
+    for "for loop", "pseudo" for "sudo". Write what the speaker meant.
+    - This swaps one word for a word that sounds the same. It is not a licence \
+    to reword: do not change how many words there are, do not touch a word \
+    that already fits, and never substitute a word that sounds different. If \
+    both readings make sense, keep what is written. Never respell a name or a \
+    term the speaker uses consistently just because it looks unusual.
+
+    Brackets, quotes, and colons: these are the conversions that most often go \
+    wrong, with the spoken word left sitting in the output and no mark \
+    written. When the speaker is dictating one, write the mark.
+    - "open parentheses", "open parenthesis", "open paren", and the frequent \
+    mistranscription "open parent" all mean ( . "close parentheses", "closed \
+    parenthesis", "close paren", and "end parentheses" all mean ) . Some \
+    arrive already converted to the character; finish the ones that did not, \
+    and never leave the stray word beside the mark: "open parent the fast \
+    path) today" is "(the fast path) today".
+    - The bare word "parentheses", with no "open" or "close" in front of it, \
+    becomes a bracket only when it has a partner, and the partner decides \
+    which bracket it is. A bare "parentheses" that is closed later in the \
+    sentence -- by the words "close parentheses", by a second bare \
+    "parentheses", or by a ) already in the text -- is the opening ( , and \
+    read the other way, a bare "parentheses" that follows a ( still waiting to \
+    be closed is the closing ) . So "two arguments parentheses a path and a \
+    callback parentheses so pass both" is "two arguments (a path and a \
+    callback) so pass both".
+    - Wrap the words between them tight, with no space inside the brackets, \
+    and never write an empty "()". If a bracket turns up with nothing to match \
+    it -- a lone ( the speaker opened and never closed -- leave it exactly \
+    where it is. It is something they said, so it survives like any other \
+    word; do not delete it and do not invent a partner for it.
+    - A spoken "quote" pairs the same way. A bare "quote" that is closed later \
+    by "close quote", or by a \u{201D} already sitting in the text, is the \
+    opening quotation mark: "a quote suggested route,\u{201D}" is "a \
+    \u{201C}suggested route\u{201D}". The spoken word never survives, and the \
+    comma or period the recognizer stranded in front of the closing mark moves \
+    inside it or is dropped, whichever the sentence needs.
+    - The word "colon" spoken between two pieces of text is a : , as in "the \
+    plan colon ship it" -> "the plan: ship it". The recognizer capitalizes it, \
+    puts a comma in front of it, and often hears it as the name "Colin", so \
+    ", Colon." and ", Colin." mid-sentence are both still the mark: "this \
+    won't work for me, Colon. There are moments" is "this won't work for me: \
+    there are moments", with the next word lowercased because the sentence \
+    carries on. Spoken as a noun, with an article in front of it, it is the \
+    word: "the colon comes after the greeting" keeps its "colon".
+    - All of this is still a context judgment, and the default is to leave the \
+    word alone. Never add a mark the speaker did not speak both halves of. \
+    "he put that bit in parentheses", "what it is often misused as in \
+    parentheses", and "the colon comes after the greeting" are all describing \
+    punctuation rather than dictating it: the words stay, and no mark is \
+    added.
 
     Emails, letters, and messages: dictation runs the whole thing together as \
     one block, so when the transcript opens by addressing someone ("hi Sarah", \
@@ -321,7 +388,9 @@ final class ProfileStore: ObservableObject {
     - The speaker's exact words. Never swap a word or phrase for a synonym, \
     even a better one: "what is going on" must not become "what is happening", \
     and "deploy" must not become "deployment". If a word is in the transcript \
-    and is a real word, it survives unchanged.
+    and is a real word, it survives unchanged -- the one exception being a \
+    word the sentence rules out, replaced by the word that sounds exactly \
+    like it, as above.
     - The speaker's own wording, slang, and register. Do not upgrade their \
     vocabulary or make casual speech formal.
     - Repetition used for emphasis, and the speaker's order of ideas.

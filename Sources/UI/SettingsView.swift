@@ -27,6 +27,20 @@ struct SettingsView: View {
     /// Bumped to recompute `logSummary` after the log is deleted.
     @State private var logRefresh = 0
 
+    private var audioSummary: String {
+        _ = logRefresh
+        let count = SessionAudio.fileCount
+        guard count > 0 else { return "No audio recorded yet" }
+        return "\(count) recording\(count == 1 ? "" : "s") · \(SessionAudio.sizeDescription)"
+    }
+
+    private var annotatedSummary: String {
+        _ = logRefresh
+        let count = SessionAudio.annotatedCount
+        guard count > 0 else { return "Nothing annotated yet" }
+        return "\(count) protected recording\(count == 1 ? "" : "s") · \(SessionAudio.annotatedSizeDescription)"
+    }
+
     private var logSummary: String {
         _ = logRefresh
         let count = SessionLog.shared.sessionCount
@@ -56,9 +70,24 @@ struct SettingsView: View {
             DictionarySettingsView().tabItem { Label("Dictionary", systemImage: "character.book.closed") }
             StatisticsSettingsView().tabItem { Label("Statistics", systemImage: "chart.bar") }
         }
-        .frame(width: 620, height: 460)
+        // Resizable, and taller than it used to be: General grew a recogniser
+        // section and the fixed height was silently clipping everything below
+        // it, which is how the log and recording rows went missing.
+        .frame(minWidth: 620, idealWidth: 620, minHeight: 460, idealHeight: 620)
         .onAppear { accessibilityGranted = HotKeyMonitor.hasAccessibilityPermission }
     }
+
+    /// Says which engine the stepper above is editing, since the value follows
+    /// the engine rather than being one global number.
+    private var debounceExplanation: String {
+        let engine = settings.backend
+        let base = "Quiet time before a rewrite fires, kept per engine — this is "
+            + "the setting for \(engine.displayName)."
+        return settings.isDebounceDefault(for: engine)
+            ? base
+            : base + " Default is \(engine.defaultDebounceMilliseconds) ms."
+    }
+
 
     private var general: some View {
         Form {
@@ -132,6 +161,19 @@ struct SettingsView: View {
                     in: 120...2000,
                     step: 50
                 )
+                HStack {
+                    Text(debounceExplanation)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if !settings.isDebounceDefault(for: settings.backend) {
+                        Button("Reset") {
+                            settings.resetDebounceToDefault(for: settings.backend)
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
 
             Section("Insertion") {
@@ -155,6 +197,44 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Recognizer") {
+                Picker("Speech recognizer", selection: $settings.recognizer) {
+                    ForEach(RecognizerChoice.allCases) { choice in
+                        Text(choice.displayName).tag(choice)
+                    }
+                }
+                Text(settings.recognizer.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Show words as early as possible", isOn: $settings.fastRecognition)
+                Text("Commits to text sooner so it appears while you are still speaking. "
+                     + "Turning it off makes the recogniser wait until a phrase settles, which "
+                     + "is slightly more accurate and noticeably less live.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Takes effect on the next dictation.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Permissions") {
+                HStack {
+                    Image(systemName: accessibilityGranted
+                          ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(accessibilityGranted ? .green : .orange)
+                    Text(accessibilityGranted
+                         ? "Accessibility access granted"
+                         : "Accessibility access required for the F7 hotkey and pasting")
+                        .font(.callout)
+                    Spacer()
+                    if !accessibilityGranted {
+                        Button("Open Settings") { HotKeyMonitor.openAccessibilitySettings() }
+                    }
+                }
+            }
+
             Section("Session log") {
                 Toggle("Keep a local log of my dictation", isOn: $settings.logSessions)
                 Text("Every session's transcript is appended to a plain-text file on this Mac, "
@@ -174,22 +254,102 @@ struct SettingsView: View {
                     }
                     .controlSize(.small)
                 }
+
+                Divider()
+
+                Toggle("Keep a local audio transcript", isOn: $settings.recordSessionAudio)
+                Text("Saves what the recogniser heard, linked to its transcript in the log, "
+                     + "so a session can be re-run through a different recogniser instead of "
+                     + "being said again. Recorded losslessly and compressed to Opus once the "
+                     + "session ends — about 150 KB a minute, a quarter of the original and "
+                     + "measurably no worse to transcribe from. It never leaves this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Keep recordings for", selection: $settings.audioRetentionDays) {
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                    Text("A year").tag(365)
+                    Text("Forever").tag(0)
+                }
+                Picker("Stop at", selection: $settings.audioMaxMegabytes) {
+                    Text("500 MB").tag(512)
+                    Text("1 GB").tag(1024)
+                    Text("5 GB").tag(5120)
+                    Text("No limit").tag(0)
+                }
+                Text("Past the ceiling it thins the folder at random rather than deleting the "
+                     + "oldest, so what is left still spans the whole year instead of "
+                     + "collapsing into the last few weeks.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text(audioSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show in Finder") { SessionAudio.revealInFinder() }
+                        .controlSize(.small)
+                    Button("Delete recordings") {
+                        SessionAudio.deleteAll()
+                        logRefresh &+= 1
+                    }
+                    .controlSize(.small)
+                }
             }
 
-            Section("Permissions") {
+
+            Section("Annotated set") {
                 HStack {
-                    Image(systemName: accessibilityGranted
-                          ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                        .foregroundStyle(accessibilityGranted ? .green : .orange)
-                    Text(accessibilityGranted
-                         ? "Accessibility access granted"
-                         : "Accessibility access required for the F7 hotkey and pasting")
-                        .font(.callout)
+                    Text(annotatedSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    if !accessibilityGranted {
-                        Button("Open Settings") { HotKeyMonitor.openAccessibilitySettings() }
-                    }
+                    Button("Show in Finder") { SessionAudio.revealAnnotatedInFinder() }
+                        .controlSize(.small)
                 }
+                Text("Recordings you have written a correct transcript for are moved here. "
+                     + "That answer took your attention to produce and cannot be regenerated, "
+                     + "so these are never deleted and never count toward the ceiling above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Where it all lives") {
+                LabeledContent("Transcripts") {
+                    Text(SessionLog.shared.fileURL.path(percentEncoded: false))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                LabeledContent("Annotated") {
+                    Text(SessionAudio.annotatedDirectory.path(percentEncoded: false))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                LabeledContent("Recordings") {
+                    Text(SessionAudio.directory.path(percentEncoded: false))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                LabeledContent("Statistics") {
+                    Text(StatsStore.shared.fileURL.path(percentEncoded: false))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                Text("Nothing here is ever uploaded. Every path is inside your own "
+                     + "Application Support folder, and each one has a delete button above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
