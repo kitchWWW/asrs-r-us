@@ -54,14 +54,15 @@ final class RewriteService: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var lastRequestedTranscript = ""
 
-    /// One provider per profile, kept so the credential cache survives between
-    /// rewrites -- otherwise every rewrite would shell out to the AWS CLI.
+    /// One provider per credential source, kept so the credential cache
+    /// survives between rewrites -- otherwise every rewrite would shell out to
+    /// the AWS CLI. Keyed by `cacheID`, which omits the secret.
     private var credentialProviders: [String: AWSCredentialProvider] = [:]
 
-    private func credentialProvider(for profile: String) -> AWSCredentialProvider {
-        if let existing = credentialProviders[profile] { return existing }
-        let made = AWSCredentialProvider(profile: profile)
-        credentialProviders[profile] = made
+    private func credentialProvider(for source: AWSCredentialSource) -> AWSCredentialProvider {
+        if let existing = credentialProviders[source.cacheID] { return existing }
+        let made = AWSCredentialProvider(source: source)
+        credentialProviders[source.cacheID] = made
         return made
     }
 
@@ -106,7 +107,7 @@ final class RewriteService: ObservableObject {
             return .ready(BedrockClient(
                 modelID: settings.bedrockModelID,
                 region: settings.bedrockRegion,
-                credentials: credentialProvider(for: settings.awsProfile)
+                credentials: credentialProvider(for: settings.awsCredentialSource)
             ))
         case .appleIntelligence:
             if let reason = AppleIntelligenceBackend.unavailableReason {

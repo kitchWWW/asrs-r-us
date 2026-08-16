@@ -34,6 +34,9 @@ final class AppSettings: ObservableObject {
         static let bedrockModelID = "bedrockModelID"
         static let bedrockRegion = "bedrockRegion"
         static let awsProfile = "awsProfile"
+        static let awsAuthMode = "awsAuthMode"
+        static let awsAccessKeyIDAccount = "aws-access-key-id"
+        static let awsSecretAccessKeyAccount = "aws-secret-access-key"
     }
 
     @Published var apiKey: String {
@@ -140,6 +143,37 @@ final class AppSettings: ObservableObject {
     /// a different account than the one that should be paying.
     @Published var awsProfile: String {
         didSet { defaults.set(awsProfile, forKey: Key.awsProfile) }
+    }
+
+    /// How Bedrock authenticates. The CLI path expires and needs a daily
+    /// `aws login`; an access key does not expire at all.
+    @Published var awsAuthMode: AWSAuthMode {
+        didSet { defaults.set(awsAuthMode.rawValue, forKey: Key.awsAuthMode) }
+    }
+
+    /// Both halves live in the keychain, not UserDefaults. The identifier is
+    /// not itself secret, but keeping the pair together means one place to
+    /// look, and one place to clear.
+    @Published var awsAccessKeyID: String {
+        didSet { Keychain.set(awsAccessKeyID, for: Key.awsAccessKeyIDAccount) }
+    }
+
+    @Published var awsSecretAccessKey: String {
+        didSet { Keychain.set(awsSecretAccessKey, for: Key.awsSecretAccessKeyAccount) }
+    }
+
+    /// Resolved source for the Bedrock client.
+    ///
+    /// Falls back to the CLI when the access-key mode is selected but a field
+    /// is still blank, so a half-filled form degrades to the path that already
+    /// worked instead of failing to sign anything.
+    var awsCredentialSource: AWSCredentialSource {
+        let id = awsAccessKeyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = awsSecretAccessKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if awsAuthMode == .accessKey, !id.isEmpty, !secret.isEmpty {
+            return .accessKey(id: id, secret: secret)
+        }
+        return .cli(profile: awsProfile)
     }
 
     /// Whether finished sessions are appended to the local session log. The
@@ -310,6 +344,7 @@ final class AppSettings: ObservableObject {
             Key.bedrockModelID: "us.anthropic.claude-sonnet-5",
             Key.bedrockRegion: "us-east-1",
             Key.awsProfile: "personal",
+            Key.awsAuthMode: AWSAuthMode.cli.rawValue,
         ])
         apiKey = Keychain.string(for: Key.apiKeyAccount)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
@@ -359,6 +394,11 @@ final class AppSettings: ObservableObject {
             ?? "us.anthropic.claude-sonnet-5"
         bedrockRegion = defaults.string(forKey: Key.bedrockRegion) ?? "us-east-1"
         awsProfile = defaults.string(forKey: Key.awsProfile) ?? "personal"
+        awsAuthMode = AWSAuthMode(
+            rawValue: defaults.string(forKey: Key.awsAuthMode) ?? ""
+        ) ?? .cli
+        awsAccessKeyID = Keychain.string(for: Key.awsAccessKeyIDAccount) ?? ""
+        awsSecretAccessKey = Keychain.string(for: Key.awsSecretAccessKeyAccount) ?? ""
         hotKey = defaults.data(forKey: Key.hotKey)
             .flatMap { try? JSONDecoder().decode(HotKeyBinding.self, from: $0) }
             ?? .f7

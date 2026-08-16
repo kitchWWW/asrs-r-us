@@ -13,7 +13,7 @@ struct SettingsView: View {
         let client = BedrockClient(
             modelID: settings.bedrockModelID,
             region: settings.bedrockRegion,
-            credentials: AWSCredentialProvider(profile: settings.awsProfile)
+            credentials: AWSCredentialProvider(source: settings.awsCredentialSource)
         )
         Task {
             do {
@@ -114,13 +114,38 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("Region", text: $settings.bedrockRegion)
                     .textFieldStyle(.roundedBorder)
-                TextField("AWS profile", text: $settings.awsProfile)
-                    .textFieldStyle(.roundedBorder)
-                Text("Credentials come from the AWS CLI for this profile, so whichever account "
-                     + "it resolves to is the one billed. Sessions expire; if rewrites start "
-                     + "failing, run `aws login --profile \(settings.awsProfile)`.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Picker("Authentication", selection: $settings.awsAuthMode) {
+                    ForEach(AWSAuthMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                if settings.awsAuthMode == .cli {
+                    TextField("AWS profile", text: $settings.awsProfile)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Credentials come from the AWS CLI for this profile, so whichever "
+                         + "account it resolves to is the one billed. Sessions expire; if "
+                         + "rewrites start failing, run `aws login --profile "
+                         + "\(settings.awsProfile)` — or switch to an access key, which "
+                         + "does not expire.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    TextField("Access key ID", text: $settings.awsAccessKeyID,
+                              prompt: Text("AKIA…"))
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Secret access key", text: $settings.awsSecretAccessKey,
+                                prompt: Text("wJalr…"))
+                        .textFieldStyle(.roundedBorder)
+                    Text("Stored in your keychain, never in preferences. An IAM access key "
+                         + "does not expire, so this is what stops the daily login. Use a key "
+                         + "belonging to a dedicated IAM user with Bedrock access only — not "
+                         + "your root account, whose keys cannot be limited and can do "
+                         + "anything including closing the account.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     Button("Test connection") { testBedrock() }
                         .controlSize(.small)
