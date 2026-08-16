@@ -15,6 +15,13 @@ Usage:
 
 Only cases marked `approved` in the set are scored; `pending` ones have not
 been reviewed yet, and `excluded` ones were thrown out as unfair tests.
+
+`Evals/gold-set.json` is not in the repository and will not be: it is real
+dictation from the session log, which is personal speech and stays on the
+machine that recorded it. This script is therefore committed without its
+answer key, and a fresh clone has nothing to score until one is supplied --
+either a local gold set carried over by hand, or your own file of the same
+shape passed with --gold.
 """
 
 import argparse
@@ -152,6 +159,9 @@ def main():
     ap.add_argument("--gold", default=GOLD)
     args = ap.parse_args()
 
+    if not os.path.exists(args.gold):
+        sys.exit(f"no gold set at {args.gold} -- it is personal dictation and is "
+                 "kept out of the repository. See this file's docstring.")
     gold = json.load(open(args.gold))
     cases = [c for c in gold["cases"]
              if args.all or c.get("status") == "approved"]
