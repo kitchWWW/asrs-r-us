@@ -17,9 +17,10 @@ enum AudioDevices {
         let name: String
         let isBuiltIn: Bool
         /// Bluetooth inputs are the reason any of the default-device juggling
-        /// exists, and the reason it has to be kept to a minimum: opening one
-        /// forces the headset into its hands-free profile, which drops both
-        /// directions to 16 kHz until the stream closes.
+        /// exists: opening one forces the headset into its hands-free profile,
+        /// which drops both directions to 16 kHz -- and, measured on a QC45,
+        /// does not come back when the stream closes. They are never offered
+        /// as a capture device; see `inputDevices()`.
         let isBluetooth: Bool
     }
 
@@ -38,7 +39,23 @@ enum AudioDevices {
             || transport == kAudioDeviceTransportTypeBluetoothLE
     }
 
+    /// Input devices the app is willing to record from.
+    ///
+    /// Bluetooth inputs are excluded outright, and this is a deliberate trade.
+    /// There is no way to open one without forcing the headset into its
+    /// hands-free profile, which collapses *playback* on the same headset to
+    /// 1 ch / 16 kHz for as long as the stream is open -- so offering them
+    /// would trade the user's music quality for a microphone measurably worse
+    /// than the one built into the Mac. They stay out of the picker, out of
+    /// `resolve`, and out of every fallback path, so no accident can land on
+    /// one. Use `allInputDevices()` for the unfiltered list.
     static func inputDevices() -> [Device] {
+        allInputDevices().filter { !$0.isBluetooth }
+    }
+
+    /// Every input device, Bluetooth included -- for reasoning *about* devices
+    /// we will not record from, such as who currently holds the system default.
+    static func allInputDevices() -> [Device] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -71,6 +88,14 @@ enum AudioDevices {
         let devices = inputDevices()
         return devices.first { $0.isBuiltIn }
             ?? devices.first { $0.name.localizedCaseInsensitiveContains("built-in") }
+    }
+
+    /// Whether a Bluetooth microphone is connected but being withheld.
+    ///
+    /// Only worth asking so the UI can say *why* a headset the user can plainly
+    /// see is not in the list; nothing selects on it.
+    static func hasWithheldBluetoothInput() -> Bool {
+        allInputDevices().contains { $0.isBluetooth }
     }
 
     static func device(uid: String) -> Device? {
@@ -190,15 +215,22 @@ final class AudioDeviceStore: ObservableObject {
 
     @Published private(set) var devices: [AudioDevices.Device] = []
 
+    /// True when a Bluetooth mic is connected and deliberately not listed, so
+    /// the picker can account for its absence instead of just omitting it.
+    @Published private(set) var hasWithheldBluetoothInput = false
+
     private var listenerBlock: AudioObjectPropertyListenerBlock?
 
     private init() {
         devices = AudioDevices.inputDevices()
+        hasWithheldBluetoothInput = AudioDevices.hasWithheldBluetoothInput()
         installListener()
     }
 
     func refresh() {
         let latest = AudioDevices.inputDevices()
+        let withheld = AudioDevices.hasWithheldBluetoothInput()
+        if withheld != hasWithheldBluetoothInput { hasWithheldBluetoothInput = withheld }
         // Republishing an identical list would invalidate views for nothing --
         // and rebuilding a picker while its menu is dispatching a selection
         // deallocates the action mid-call.

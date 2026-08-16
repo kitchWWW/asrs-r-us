@@ -35,6 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // app the user was actually in.
         _ = FrontmostAppTracker.shared
 
+        // Take the system default input off any Bluetooth headset now, and keep
+        // it off for the life of the app. macOS hands the default to a headset
+        // the moment one connects, and anything that then opens the default --
+        // including this app merely building its audio graph -- drops the
+        // headset to hands-free and ruins playback until it is reconnected.
+        DefaultInputGuard.shared.start()
+
         installMainMenu()
         installStatusItem()
         installHotKey()
@@ -67,7 +74,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Saves are debounced, so a quit within the window would drop the last
         // session's counters. Flush synchronously here.
         StatsStore.shared.saveNow()
-        session.dictation.restoreDefaultInputIfNeeded()
         session.server.stop()
         hotKey.stop()
         permissionPollTimer?.invalidate()

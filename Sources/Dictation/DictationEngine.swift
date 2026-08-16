@@ -63,8 +63,6 @@ final class DictationEngine: ObservableObject {
     private var audioStartedAt: Date?
     private var rebuildCount = 0
     private var lastRebuildAt: Date?
-    /// System default input to put back when the session ends, if we changed it.
-    private var defaultInputToRestore: AudioDeviceID?
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
@@ -101,6 +99,16 @@ final class DictationEngine: ObservableObject {
             try await authorize()
             try await configurePipeline()
             try await startAudio()
+            // A stop can land while the awaits above are suspended: `stop()`
+            // accepts `.preparing`, and starting up yields more than once (asset
+            // reservation, the CoreAudio settling sleep). Coming back to find
+            // the session already cancelled means everything just built is
+            // orphaned -- an engine nobody will ever stop, holding an open input
+            // node. Undo it instead of declaring ourselves live.
+            guard state == .preparing else {
+                await teardown()
+                return
+            }
             state = .recording
             log.info("dictation started")
         } catch {
@@ -311,6 +319,42 @@ final class DictationEngine: ObservableObject {
             throw DictationError.noCompatibleAudioFormat
         }
 
+        // Resolve the device before the engine exists: the ordering below turns
+        // on already knowing where we are going to record from.
+        guard let device = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID) else {
+            // Distinguish "nothing is plugged in" from "the only thing plugged
+            // in is a headset we refuse to open", which is a dead end the user
+            // can actually do something about.
+            throw AudioDevices.hasWithheldBluetoothInput()
+                ? DictationError.onlyBluetoothInputs
+                : DictationError.noAudioInput
+        }
+
+        // Make certain the default input is not a Bluetooth device *before* an
+        // input node exists. `DefaultInputGuard` normally has this handled
+        // already; this is the synchronous belt-and-braces for the case where a
+        // headset connected moments ago and the guard's listener has not run.
+        //
+        // The ordering is the entire point, and having it backwards is what
+        // quietly degraded the headphones for as long as the app was running:
+        // `AVAudioEngine.inputNode` instantiates its audio unit already bound to
+        // whatever holds the default input, so merely reading that property
+        // while a headset holds it opens the headset microphone and flips it
+        // into hands-free. Measured on a QC45: reading `inputNode` dropped its
+        // output from 2 ch / 44.1 kHz to 1 ch / 16 kHz instantly, before any
+        // setDeviceID call, and it stayed there after the engine stopped. The
+        // later `setDeviceID` cannot undo it -- by then the profile has flipped.
+        //
+        // Nothing is recorded for a later restore. The default belongs on a
+        // non-Bluetooth mic permanently; handing it back is what used to
+        // re-trigger the very profile switch this avoids.
+        if let currentDefault = AudioDevices.defaultInputDeviceID(),
+           AudioDevices.isBluetooth(currentDefault) {
+            DefaultInputGuard.shared.enforce()
+            // Let CoreAudio settle before the input node latches onto it.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
         // A fresh engine per session. An AVAudioEngine that has already been
         // started keeps its input unit bound to the device it first resolved,
         // and setDeviceID is then ignored -- which is why switching microphones
@@ -319,11 +363,9 @@ final class DictationEngine: ObservableObject {
         audioEngine = AVAudioEngine()
         let input = audioEngine.inputNode
 
-        // Bind the device *before* querying the format: the input node reports
-        // the format of whichever device it is currently attached to.
-        guard let device = AudioDevices.resolve(preferredUID: AppSettings.shared.inputDeviceUID) else {
-            throw DictationError.noAudioInput
-        }
+        // Bind the device explicitly anyway: the default is not always ours,
+        // and the node reports the format of whichever device it is attached
+        // to, so this has to happen before the format is queried.
         do {
             try input.auAudioUnit.setDeviceID(device.id)
         } catch {
@@ -333,27 +375,6 @@ final class DictationEngine: ObservableObject {
         // or from one that yields silence -- is a worse failure than saying so.
         guard input.auAudioUnit.deviceID == device.id else {
             throw DictationError.deviceUnavailable(name: device.name)
-        }
-        // Align the system default with the device we are about to record from,
-        // but *only* to escape the one situation that needs it: a Bluetooth
-        // headset holding the default input starves every other device --
-        // measured at roughly one buffer per ten seconds against a hundred.
-        //
-        // Deliberately narrow. Taking the default over is not free: a Bluetooth
-        // input can only run in the hands-free profile, which pins the headset
-        // to 16 kHz in both directions, so music playing through the same
-        // headset degrades audibly for as long as the stream is open. When the
-        // current default is not Bluetooth there is nothing to escape, and the
-        // system default is left exactly as the user set it.
-        if let currentDefault = AudioDevices.defaultInputDeviceID(),
-           currentDefault != device.id,
-           AudioDevices.isBluetooth(currentDefault) {
-            if AudioDevices.setDefaultInputDevice(device.id) {
-                defaultInputToRestore = currentDefault
-                log.info("took system default input from a Bluetooth device for \(device.name)")
-                // Give CoreAudio a moment to settle before opening the stream.
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
         }
 
         activeInputDeviceName = device.name
@@ -520,15 +541,6 @@ final class DictationEngine: ObservableObject {
         await start()
     }
 
-    /// Synchronous safety net for app termination: `teardown` is async and may
-    /// not finish if we are being torn down, and leaving the user's default
-    /// input pointing somewhere they did not choose would outlive the app.
-    func restoreDefaultInputIfNeeded() {
-        guard let restore = defaultInputToRestore else { return }
-        AudioDevices.setDefaultInputDevice(restore)
-        defaultInputToRestore = nil
-    }
-
     // MARK: - Teardown
 
     private func teardown() async {
@@ -559,10 +571,13 @@ final class DictationEngine: ObservableObject {
         recognizerTask = nil
         transcriber = nil
         dictationTranscriber = nil
-        if let restore = defaultInputToRestore {
-            AudioDevices.setDefaultInputDevice(restore)
-            defaultInputToRestore = nil
-        }
+        // Drop the input node along with the engine. A stopped AVAudioEngine is
+        // not an inert one -- its node stays instantiated and re-resolves when
+        // the default input changes underneath it, which would open whatever
+        // arrived next. The replacement is safe to hold: an engine only binds to
+        // a device once `inputNode` is read, and that does not happen again
+        // until the next session.
+        audioEngine = AVAudioEngine()
 
         analyzerFormat = nil
         boundDeviceID = nil
@@ -579,6 +594,7 @@ final class DictationEngine: ObservableObject {
         case unavailable
         case noCompatibleAudioFormat
         case noAudioInput
+        case onlyBluetoothInputs
         case deviceUnavailable(name: String)
         case incompatibleInputDevice(name: String, channels: Int)
 
@@ -594,6 +610,8 @@ final class DictationEngine: ObservableObject {
                 return "Could not negotiate an audio format with the speech recognizer."
             case .noAudioInput:
                 return "No audio input device is available."
+            case .onlyBluetoothInputs:
+                return "The only microphone available is a Bluetooth one, which this app will not record from — using it would drop your headphones to call quality. Connect a wired or built-in mic."
             case let .deviceUnavailable(name):
                 return "Could not record from \(name). Choose a different microphone." 
             case let .incompatibleInputDevice(name, channels):

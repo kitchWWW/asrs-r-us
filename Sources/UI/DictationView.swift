@@ -127,6 +127,13 @@ struct DictationView: View {
             }
             .labelsHidden()
             .pickerStyle(.inline)
+
+            // A connected headset that simply is not in the list reads as a
+            // bug. Say it is on purpose, and say what it would have cost.
+            if deviceStore.hasWithheldBluetoothInput {
+                Divider()
+                Text("Bluetooth mics aren't listed — recording from one drops the headset to call quality.")
+            }
         } label: {
             pillLabel(currentMicName)
         }
