@@ -28,6 +28,7 @@ final class ProfileStore: ObservableObject {
         static let legacyPrompt = "systemPrompt"
         static let prunedSeeds = "prunedSeedProfilesV2"
         static let seededWorkPersonal = "seededWorkPersonalV1"
+        static let refreshedStyles = "refreshedSeedStylesV1"
     }
 
     @Published var profiles: [Profile] {
@@ -87,6 +88,10 @@ final class ProfileStore: ObservableObject {
             if !existing.contains("Work") { prepared.append(Self.workProfile()) }
             if !existing.contains("Personal") { prepared.append(Self.personalProfile()) }
             UserDefaults.standard.set(true, forKey: Key.seededWorkPersonal)
+        }
+        if !UserDefaults.standard.bool(forKey: Key.refreshedStyles) {
+            prepared = Self.refreshingSeedStyles(in: prepared)
+            UserDefaults.standard.set(true, forKey: Key.refreshedStyles)
         }
         if !UserDefaults.standard.bool(forKey: Key.prunedSeeds) {
             let pruned = prepared.filter { !["Work", "Friends"].contains($0.name) }
@@ -191,6 +196,31 @@ final class ProfileStore: ObservableObject {
 
             var updated = profile
             updated.prompt = refreshed
+            return updated
+        }
+    }
+
+    /// One-time replacement of the seeded profiles' style sections.
+    ///
+    /// `upgradingLegacyPrompts` deliberately preserves whatever style section a
+    /// stored profile carries -- that is what keeps a user's own wording safe
+    /// when the shared rules change underneath it. The cost is that editing
+    /// `workStyle` or `personalStyle` in code otherwise reaches new installs
+    /// only, and never the profiles already on disk.
+    ///
+    /// These two were rewritten from a study of how Brian actually writes, so
+    /// they are worth pushing to existing profiles once. Guarded by its own
+    /// defaults flag so it happens exactly once, and applied only to profiles
+    /// still named "Work" and "Personal". Brian confirmed neither style section
+    /// had been hand-edited before this ran; a later revision that cannot
+    /// assume that should compare against the previous text first.
+    private static func refreshingSeedStyles(in profiles: [Profile]) -> [Profile] {
+        let replacements = ["Work": workStyle, "Personal": personalStyle]
+        return profiles.map { profile in
+            guard let style = replacements[profile.name],
+                  let marker = profile.prompt.range(of: baseTailMarker) else { return profile }
+            var updated = profile
+            updated.prompt = String(profile.prompt[..<marker.upperBound]) + "\n\n" + style
             return updated
         }
     }
@@ -434,35 +464,98 @@ final class ProfileStore: ObservableObject {
         return basePrompt + "\n\n" + style
     }
 
+    /// The Work profile's style section. A constant rather than a literal
+    /// inside the factory because `refreshingSeedStyles` needs the same text.
+    static let workStyle = """
+    Style:
+    - This is professional writing: email, Slack to colleagues, tickets, docs.
+    - Clear, warm, and competent. Not stiff, not chummy.
+    - Use real emoji sparingly and only where the speaker clearly \
+    intended one.
+    - Prefer complete sentences and correct punctuation. Break \
+    multi-topic dictation into short paragraphs.
+    """
+
     static func workProfile() -> Profile {
-        Profile(
-            name: "Work",
-            prompt: template(styleFor: """
-            Style:
-            - This is professional writing: email, Slack to colleagues, tickets, docs.
-            - Clear, warm, and competent. Not stiff, not chummy.
-            - Use real emoji sparingly and only where the speaker clearly \
-            intended one.
-            - Prefer complete sentences and correct punctuation. Break \
-            multi-topic dictation into short paragraphs.
-            """)
-        )
+        Profile(name: "Work", prompt: template(styleFor: workStyle))
     }
 
+    /// The Personal profile's style section.
+    ///
+    /// Measured rather than guessed: derived from 9,138 messages Brian sent
+    /// across 48 long threads, his own side only. The shape that came out is
+    /// the opposite of how models usually imitate casual texting -- he is a
+    /// *conventional* writer (capitals, apostrophes, whole words, no
+    /// shorthand) who simply drops end punctuation and keeps things very
+    /// short. Percentages are kept in the text because they are the argument
+    /// for each rule, and because a later revision should know which ones were
+    /// strong.
+    ///
+    /// Three measurements are deliberately *not* followed. His messages open
+    /// with a capital 98% of the time, capitalize a standalone "I" 99.7% of the
+    /// time, and use curly apostrophes 95% of the time -- but all three are the
+    /// iOS keyboard rather than the writer: autocapitalization and smart
+    /// punctuation, not choices. One rule here also deliberately contradicts
+    /// the base prompt: the base spells out numbers below twelve, which Brian
+    /// asked for and meant for written prose, while his texting runs four to
+    /// one the other way -- so this section overrides it in as many words,
+    /// rather than leaving the model to reconcile two rules that disagree.
+    /// Brian does not capitalize a message himself, so a
+    /// statistic that measures the keyboard is not evidence about him. Prefer
+    /// his account of his own habits over the corpus wherever the corpus is
+    /// really describing autocorrect. See `workStyle` for why this is a
+    /// constant.
+    static let personalStyle = """
+    Style:
+    - This is casual writing to friends and family. It is dictated speech being
+    written down, so every rule below describes how the finished message should
+    read -- never a licence to add anything he did not say.
+    - Lowercase throughout. Do not capitalize the first word of the message, and
+    write a standalone "i" lowercase too, along with "i'm", "i'll", "i've". The
+    stored messages capitalize the opening word 98% of the time and "I" 99.7%,
+    but both are the iOS keyboard rather than him. Proper nouns keep their
+    capitals -- names, places, products.
+    - Do not end with a period. Only 1% of his messages do, and that still holds
+    for his longest ones. This is the single strongest signal in his writing;
+    getting it wrong is what makes an imitation read as somebody else.
+    - Prefer no closing punctuation at all -- 75% of his messages have none. Use
+    "!" or "?" only where the content genuinely calls for one, and do not force
+    a "?" onto every question.
+    - Keep it short. His median message is five words, and half are five or
+    fewer. Do not pad, and do not weld two separate thoughts into one longer
+    sentence: leave them as separate short sentences.
+    - Spell words out in full: "you", "your", "tomorrow", "really", "sorry",
+    "thank you". Never substitute "u", "ur", "tmrw", "ty".
+    - Numbers go the other way: write them as digits. This deliberately
+    overrides the rule further up about spelling out numbers below twelve --
+    that one is for written prose, and in texting he uses digits over
+    spelled-out numbers about four to one. So "3" not "three", "2nd" not
+    "second". Dates and times stay as figures, as they do everywhere.
+    - Never introduce shorthand he does not use. Not one of these appears
+    anywhere in nine thousand of his messages: lmk, tbh, ngl, imo, btw, np, ty,
+    yw, omw, wyd, hbu, fr, smh, lmao, nah, yup, okay, ur, cuz. The only
+    shorthand he does use is ok, bc, idk, lol, and tho.
+    - Write "ok", never "okay".
+    - For a casual yes he says "yah" about six times as often as "yeah". Keep
+    whichever he actually said, and never write "yup" or "nah".
+    - Keep the apostrophe in contractions -- "don't", "i'm", never "dont" or
+    "im". Straight, not curly: the curly ones in his messages are iOS smart
+    punctuation, the same artifact as the capital at the start.
+    - Render a smiley as the text emoticon :) rather than an emoji, and likewise
+    :( and :/ and <3. He uses emoticons about twice as often as emoji.
+    - Never use an ellipsis, an em dash, or a semicolon; he effectively never
+    does. Write "and" rather than "&". Commas are fine and common.
+    - Never append "lol" or "haha" to the end. He does this in 0.2% of messages,
+    and it is the commonest way an imitation of him goes wrong.
+    - Never add a greeting or a sign-off he did not say; he essentially never
+    signs off. If he does open by repeating a greeting, as in "hi hi", keep the
+    repetition rather than tidying it into one.
+    - Hedge with "i think", "maybe", or "might", and intensify with "so",
+    "really", "totally", or "super". "quite" and "extremely" are not his words.
+    """
+
     static func personalProfile() -> Profile {
-        Profile(
-            name: "Personal",
-            prompt: template(styleFor: """
-            Style:
-            - This is casual writing to friends and family.
-            - Keep it loose and conversational. Contractions, sentence \
-            fragments, and lowercase are fine if that is how it was said.
-            - Render a smiley as the text emoticon :) rather than an emoji, and \
-            likewise :( and ;) for the obvious ones.
-            - Do not tidy the personality out of it. Slang stays.
-            - Short. Do not pad a two-line message into a paragraph.
-            """)
-        )
+        Profile(name: "Personal", prompt: template(styleFor: personalStyle))
     }
 
     static func defaultProfiles() -> [Profile] {
