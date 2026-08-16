@@ -11,6 +11,8 @@ final class AppSettings: ObservableObject {
     private enum Key {
         static let apiKeyAccount = "anthropic-api-key"
         static let model = "model"
+        static let debounceByEngine = "debounceByEngine"
+        /// Pre-per-engine single value, migrated onto the selected engine.
         static let debounceMilliseconds = "debounceMilliseconds"
         static let restorePasteboard = "restorePasteboard"
         static let insertionMethod = "insertionMethod"
@@ -23,6 +25,11 @@ final class AppSettings: ObservableObject {
         static let dictionary = "dictionary"
         static let techVocabulary = "includeTechVocabulary"
         static let logSessions = "logSessions"
+        static let recordSessionAudio = "recordSessionAudio"
+        static let audioRetentionDays = "audioRetentionDays"
+        static let audioMaxMegabytes = "audioMaxMegabytes"
+        static let recognizer = "recognizer"
+        static let fastRecognition = "fastRecognition"
         static let bedrockModelID = "bedrockModelID"
         static let bedrockRegion = "bedrockRegion"
         static let awsProfile = "awsProfile"
@@ -36,9 +43,40 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(model, forKey: Key.model) }
     }
 
-    /// How long the transcript must be quiet before a rewrite is fired.
-    @Published var debounceMilliseconds: Int {
-        didSet { defaults.set(debounceMilliseconds, forKey: Key.debounceMilliseconds) }
+    /// How long the transcript must be quiet before a rewrite is fired, per
+    /// engine, keyed by `RewriteBackendKind.rawValue`.
+    ///
+    /// Per engine rather than global because the debounce is really a rate
+    /// limit on requests, and a request to a local model and a request to a
+    /// billed hosted one are not the same thing to spend.
+    @Published private var debounceByEngine: [String: Int] {
+        didSet { defaults.set(debounceByEngine, forKey: Key.debounceByEngine) }
+    }
+
+    /// Debounce for the engine currently in use. This is what the rewriter
+    /// reads, so switching engines changes the timing with it.
+    var debounceMilliseconds: Int {
+        get { debounce(for: backend) }
+        set { setDebounce(newValue, for: backend) }
+    }
+
+    func debounce(for kind: RewriteBackendKind) -> Int {
+        debounceByEngine[kind.rawValue] ?? kind.defaultDebounceMilliseconds
+    }
+
+    func setDebounce(_ value: Int, for kind: RewriteBackendKind) {
+        // Floor matches the one the rewriter enforces anyway; the ceiling just
+        // stops a stray keystroke parking the rewrite minutes away.
+        debounceByEngine[kind.rawValue] = max(120, min(3000, value))
+    }
+
+    func resetDebounceToDefault(for kind: RewriteBackendKind) {
+        debounceByEngine.removeValue(forKey: kind.rawValue)
+    }
+
+    func isDebounceDefault(for kind: RewriteBackendKind) -> Bool {
+        debounceByEngine[kind.rawValue] == nil
+            || debounceByEngine[kind.rawValue] == kind.defaultDebounceMilliseconds
     }
 
     @Published var restorePasteboard: Bool {
@@ -107,6 +145,37 @@ final class AppSettings: ObservableObject {
     /// log is the only source of real dictation to test against, so this
     /// defaults on -- but everything spoken lands in a plaintext file, so it
     /// is a visible switch rather than a silent one.
+    /// Keeps the audio each session was recognised from, so a transcript can
+    /// be replayed through a different recogniser later. Separate from
+    /// `logSessions`: the text is a record of what was said, the audio is a
+    /// recording of the room, and someone may reasonably want one without the
+    /// other.
+    @Published var recordSessionAudio: Bool {
+        didSet { defaults.set(recordSessionAudio, forKey: Key.recordSessionAudio) }
+    }
+
+    /// Which speech module transcribes. See `RecognizerChoice`.
+    @Published var recognizer: RecognizerChoice {
+        didSet { defaults.set(recognizer.rawValue, forKey: Key.recognizer) }
+    }
+
+    /// Asks the recogniser to commit to text sooner. It is the difference
+    /// between watching words appear as you speak and waiting for the phrase
+    /// to settle, and it costs a little accuracy for the speed.
+    @Published var fastRecognition: Bool {
+        didSet { defaults.set(fastRecognition, forKey: Key.fastRecognition) }
+    }
+
+    /// How long recordings are kept. Zero means forever.
+    @Published var audioRetentionDays: Int {
+        didSet { defaults.set(audioRetentionDays, forKey: Key.audioRetentionDays) }
+    }
+
+    /// Ceiling on the recordings folder. Zero means no ceiling.
+    @Published var audioMaxMegabytes: Int {
+        didSet { defaults.set(audioMaxMegabytes, forKey: Key.audioMaxMegabytes) }
+    }
+
     @Published var logSessions: Bool {
         didSet { defaults.set(logSessions, forKey: Key.logSessions) }
     }
@@ -205,7 +274,10 @@ final class AppSettings: ObservableObject {
             Key.debounceMilliseconds: 350,
             Key.restorePasteboard: true,
             Key.insertionMethod: TextInserter.Method.paste.rawValue,
-            Key.backend: RewriteBackendKind.bedrock.rawValue,
+            // Local by default: it works with no AWS account, no credentials,
+            // and no per-rewrite cost, which is the right first run even
+            // though Bedrock produces the better rewrite.
+            Key.backend: RewriteBackendKind.local.rawValue,
             // Benchmarked against Qwen2.5-1.5B and Apple Intelligence on the
             // real prompt: same rule-compliance as the 1.5B but noticeably
             // better structure and capitalisation, and it holds content the
@@ -218,6 +290,11 @@ final class AppSettings: ObservableObject {
             Key.dictionary: "",
             Key.techVocabulary: true,
             Key.logSessions: true,
+            Key.recordSessionAudio: true,
+            Key.audioRetentionDays: 0,
+            Key.audioMaxMegabytes: 5120,
+            Key.recognizer: RecognizerChoice.punctuated.rawValue,
+            Key.fastRecognition: true,
             // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
             // only Claude on Bedrock that ignores `cache_control`. With the ~1,750
             // token preamble cached, Sonnet 5 costs about 40% less per month than
@@ -231,14 +308,28 @@ final class AppSettings: ObservableObject {
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
             ?? ""
         model = defaults.string(forKey: Key.model) ?? "claude-haiku-4-5"
-        debounceMilliseconds = defaults.integer(forKey: Key.debounceMilliseconds)
         restorePasteboard = defaults.bool(forKey: Key.restorePasteboard)
         insertionMethod = TextInserter.Method(
             rawValue: defaults.string(forKey: Key.insertionMethod) ?? ""
         ) ?? .paste
-        backend = RewriteBackendKind(
+
+        let resolvedBackend = RewriteBackendKind(
             rawValue: defaults.string(forKey: Key.backend) ?? ""
-        ) ?? .bedrock
+        ) ?? .local
+        backend = resolvedBackend
+
+        // A pre-existing single debounce is carried onto the engine that was
+        // selected when it was set -- that is the engine it was tuned against.
+        // Applying it to all four would undo the point of splitting them up.
+        // 350 was the old registered default, so a value equal to it says
+        // nothing about intent and is left to the per-engine defaults.
+        var perEngine = defaults.dictionary(forKey: Key.debounceByEngine) as? [String: Int] ?? [:]
+        if perEngine.isEmpty,
+           let legacy = defaults.object(forKey: Key.debounceMilliseconds) as? Int,
+           legacy != 350 {
+            perEngine[resolvedBackend.rawValue] = legacy
+        }
+        debounceByEngine = perEngine
         localModelRepo = defaults.string(forKey: Key.localModelRepo)
             ?? "bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
         localPort = defaults.integer(forKey: Key.localPort)
@@ -247,6 +338,13 @@ final class AppSettings: ObservableObject {
         dictionary = defaults.string(forKey: Key.dictionary) ?? ""
         includeTechVocabulary = defaults.bool(forKey: Key.techVocabulary)
         logSessions = defaults.bool(forKey: Key.logSessions)
+        recordSessionAudio = defaults.bool(forKey: Key.recordSessionAudio)
+        audioRetentionDays = defaults.integer(forKey: Key.audioRetentionDays)
+        audioMaxMegabytes = defaults.integer(forKey: Key.audioMaxMegabytes)
+        fastRecognition = defaults.bool(forKey: Key.fastRecognition)
+        recognizer = RecognizerChoice(
+            rawValue: defaults.string(forKey: Key.recognizer) ?? ""
+        ) ?? .punctuated
         bedrockModelID = defaults.string(forKey: Key.bedrockModelID)
             ?? "us.anthropic.claude-sonnet-5"
         bedrockRegion = defaults.string(forKey: Key.bedrockRegion) ?? "us-east-1"

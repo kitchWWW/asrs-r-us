@@ -53,7 +53,7 @@ struct BedrockClient: RewriteBackend {
     }
 
     private func body(system: String, user: String) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
+        var payload: [String: Any] = [
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": maxTokens,
             // No `temperature`: it is deprecated on the newer models and a
@@ -67,7 +67,32 @@ struct BedrockClient: RewriteBackend {
                 "cache_control": ["type": "ephemeral"],
             ]],
             "messages": [["role": "user", "content": user]],
-        ])
+        ]
+
+        // Thinking is on by default on the current models, and it is pure cost
+        // here: this is transcription clean-up, and the app throws the
+        // reasoning away without ever showing it. Measured on one real
+        // dictation through Sonnet 5: 1,177 output tokens with thinking on,
+        // 107 with it off, for the same rewrite.
+        //
+        // It is also a correctness fix. `complete` keeps only `text` blocks,
+        // so a response whose whole budget went to thinking arrives empty --
+        // the panel keeps the stale rewrite and the user falls back to the raw
+        // transcript, which is exactly the latency fallback the statistics tab
+        // counts.
+        if !Self.refusesDisabledThinking(modelID) {
+            payload["thinking"] = ["type": "disabled"]
+        }
+
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// Claude Fable and Mythos think unconditionally and return a 400 for an
+    /// explicit `disabled`, so they are asked for nothing. Every other model
+    /// the picker offers accepts it, verified against Bedrock.
+    private static func refusesDisabledThinking(_ modelID: String) -> Bool {
+        let id = modelID.lowercased()
+        return id.contains("fable") || id.contains("mythos")
     }
 
     /// One request, one emission. The stream shape exists for the local
@@ -121,6 +146,20 @@ struct BedrockClient: RewriteBackend {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]]
         else { throw ClientError.malformedResponse }
+
+        // Bedrock's InvokeModel returns the whole message at once, so usage
+        // arrives as a plain object rather than needing the streaming
+        // `message_start` / `message_delta` accounting.
+        if let usage = json["usage"] as? [String: Any] {
+            let sample = TokenUsage(
+                model: modelID,
+                inputTokens: usage["input_tokens"] as? Int ?? 0,
+                outputTokens: usage["output_tokens"] as? Int ?? 0,
+                cacheWriteTokens: usage["cache_creation_input_tokens"] as? Int ?? 0,
+                cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0
+            )
+            Task { @MainActor in StatsStore.shared.recordUsage(sample) }
+        }
 
         return content
             .filter { $0["type"] as? String == "text" }

@@ -10,6 +10,11 @@ import Speech
 final class AudioFeeder: @unchecked Sendable {
 
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
+
+    /// Set when the session is being recorded. It receives the same buffer the
+    /// analyzer does, after conversion, so the file on disk is exactly what
+    /// the recogniser worked from.
+    var recorder: SessionAudioRecorder?
     private let converter: AVAudioConverter?
     private let targetFormat: AVAudioFormat
     private let needsConversion: Bool
@@ -48,6 +53,7 @@ final class AudioFeeder: @unchecked Sendable {
         level = Self.peakLevel(of: buffer)
 
         guard needsConversion else {
+            recorder?.append(buffer)
             continuation.yield(AnalyzerInput(buffer: buffer))
             return
         }
@@ -75,6 +81,7 @@ final class AudioFeeder: @unchecked Sendable {
         }
 
         guard status != .error, output.frameLength > 0 else { return }
+        recorder?.append(output)
         continuation.yield(AnalyzerInput(buffer: output))
     }
 

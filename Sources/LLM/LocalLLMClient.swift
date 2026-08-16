@@ -47,6 +47,10 @@ struct LocalLLMClient: RewriteBackend {
                         "max_tokens": maxTokens,
                         "temperature": 0.2,
                         "stream": true,
+                        // llama.cpp only reports token counts if asked. They
+                        // are not billed, but they are what the "if this had
+                        // gone to a hosted model" figure is computed from.
+                        "stream_options": ["include_usage": true],
                         "messages": [
                             ["role": "system", "content": system],
                             ["role": "user", "content": user],
@@ -69,8 +73,23 @@ struct LocalLLMClient: RewriteBackend {
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                         guard !payload.isEmpty, payload != "[DONE]" else { continue }
                         guard let data = payload.data(using: .utf8),
-                              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = event["choices"] as? [[String: Any]],
+                              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+
+                        // The usage chunk arrives last and carries no choices.
+                        if let usage = event["usage"] as? [String: Any] {
+                            let sample = TokenUsage(
+                                model: self.modelName,
+                                inputTokens: usage["prompt_tokens"] as? Int ?? 0,
+                                outputTokens: usage["completion_tokens"] as? Int ?? 0,
+                                cacheWriteTokens: 0,
+                                cacheReadTokens: (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int ?? 0
+                            )
+                            Task { @MainActor in StatsStore.shared.recordLocalUsage(sample) }
+                            continue
+                        }
+
+                        guard let choices = event["choices"] as? [[String: Any]],
                               let delta = choices.first?["delta"] as? [String: Any],
                               let text = delta["content"] as? String,
                               !text.isEmpty

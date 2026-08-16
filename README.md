@@ -21,7 +21,7 @@ around one hard rule: **keep everything the speaker actually said.**
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
 Then whichever rewrite engine you want (see [Engines](#engines)); the default
-is Claude on Amazon Bedrock, which needs the AWS CLI.
+is the local model, which needs `brew install llama.cpp` and nothing else.
 
 ## Install
 
@@ -61,8 +61,9 @@ cp -R "$(make path)" /Applications/
    other apps. Nothing works without it.
 2. **Microphone** and **Speech Recognition** — prompted the first time you
    dictate.
-3. **An engine** — menu bar icon → Settings → General. The default is Bedrock;
-   see below for what each one needs.
+3. **An engine** — menu bar icon → Settings → General. The default is the
+   local model, which works offline with no account; see below for what each
+   one needs.
 
 The first dictation in a given language may pause to download the on-device
 speech model. After that recognition is instant and fully offline — only the
@@ -75,8 +76,8 @@ pill at the bottom of the panel.
 
 | Engine | Setup | Notes |
 |---|---|---|
-| **Claude on Bedrock** *(default)* | AWS CLI authenticated for a named profile | Sonnet 5 by default. Best quality; the ~1,750-token preamble is cached, so it is also cheap. |
-| **Local (llama.cpp)** | `brew install llama.cpp` | Qwen2.5-7B by default. Free, private, no network. The app spawns and supervises `llama-server` itself. |
+| **Local (llama.cpp)** *(default)* | `brew install llama.cpp` | Qwen2.5-7B by default. Free, private, no network. The app spawns and supervises `llama-server` itself. |
+| **Claude on Bedrock** | AWS CLI authenticated for a named profile | Sonnet 5 by default. Best quality; the ~1,750-token preamble is cached, so it is also cheap. |
 | **Apple Intelligence** | Enable Apple Intelligence in System Settings | On-device, zero install, no API key. Requires supported hardware. |
 | **Anthropic API** | An API key, pasted into Settings | Goes into your login keychain; `$ANTHROPIC_API_KEY` is a fallback. |
 
@@ -109,9 +110,9 @@ log, and permission status.
 
 | Setting | Default | Notes |
 |---|---|---|
-| Engine | Claude on Bedrock | Switchable mid-session from the panel. |
+| Engine | Local model (llama.cpp) | Switchable mid-session from the panel. |
 | Model repo | `bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M` | Any GGUF repo `llama-server -hf` accepts. |
-| Debounce | 350 ms | Quiet time before a rewrite fires. Lower = snappier, more tokens. |
+| Debounce | per engine — 200 ms local, 600 ms Bedrock | Quiet time before a rewrite fires. Kept per engine, since a local request is free and a hosted one is billed. Finals from the recogniser bypass it and fire immediately. |
 | Insertion method | Paste | `Paste` (fast, universal) or `Type` (synthesises keystrokes, never touches the clipboard). |
 | Restore clipboard | on | Puts your previous clipboard back ~0.7 s after pasting. |
 | Session log | on | Appends every session to a local JSONL file. Nothing is uploaded. |
@@ -149,8 +150,11 @@ activity and streaks, which apps you dictate into, a weekday-by-hour heatmap,
 and the corrections that keep recurring.
 
 Two of these earn their place beyond curiosity. **How the rewrites land** shows
-how often you took the raw transcript over the rewrite — the bluntest signal
-that the model got it wrong. And **speed by engine** reports median and p95 for
+how often you took the raw transcript over the rewrite, split by *why*: a
+fallback with an empty output box means you gave up waiting, while one with a
+rewrite on screen means you read it and turned it down. Lumped together the
+number is unreadable — the first says the engine is too slow, the second says
+the prompt is wrong, and they call for opposite fixes. And **speed by engine** reports median and p95 for
 both first token and full completion, so choosing between engines is a
 measurement rather than a feeling.
 

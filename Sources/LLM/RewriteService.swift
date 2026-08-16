@@ -123,14 +123,30 @@ final class RewriteService: ObservableObject {
 
     // MARK: - Entry points
 
-    /// Called on every ASR update. Debounces, then rewrites.
-    func transcriptChanged(_ transcript: String) {
+    /// Called on every ASR update.
+    ///
+    /// The debounce exists to stop a request going out per syllable while the
+    /// recognizer is still revising its guess. Once a result comes back final,
+    /// there is nothing left to wait for -- those words are settled, and
+    /// holding them for another half second only adds latency to a rewrite
+    /// that was going to happen anyway. So finals fire immediately and only
+    /// volatile updates are debounced.
+    ///
+    /// Either way the request is skipped when the text is unchanged from the
+    /// one already sent, so a final that merely confirms the volatile tail
+    /// costs nothing.
+    func transcriptChanged(_ transcript: String, isFinal: Bool = false) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         latestTranscript = trimmed
         guard trimmed != lastRequestedTranscript else { return }
 
         debounceTask?.cancel()
+
+        if isFinal {
+            Task { [weak self] in await self?.rewrite(transcript: trimmed) }
+            return
+        }
         let delay = UInt64(max(120, settings.debounceMilliseconds)) * 1_000_000
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)

@@ -235,6 +235,19 @@ struct DictationView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Button {
+                    Task { await session.runRewriteNow() }
+                } label: {
+                    if session.isRunningNow {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                    } else {
+                        Text("Run")
+                    }
+                }
+                .buttonStyle(.glassControl)
+                .disabled(!session.canRunNow || session.isRunningNow)
+                .help("Rewrite the transcript as it stands now, without waiting")
+
+                Button {
                     Task { await useTranscriptAction?() }
                 } label: {
                     if session.isInserting {

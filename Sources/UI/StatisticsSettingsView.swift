@@ -26,6 +26,9 @@ struct StatisticsSettingsView: View {
                     places
                     rhythm
                     corrections
+                    // Last, below everything else: spend is worth being able
+                    // to find, not worth reading on every visit.
+                    spend
                 }
                 footer
             }
@@ -158,8 +161,15 @@ struct StatisticsSettingsView: View {
                 }
                 .frame(height: 10)
 
-                HStack(spacing: 12) {
-                    ForEach(counts, id: \.outcome) { entry in
+                // Five entries with the fallback split named in full no longer
+                // reliably fit one line, so the legend wraps instead of
+                // truncating the labels that need the room most.
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 118), spacing: 12, alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 4
+                ) {
+                    ForEach(counts.filter { $0.count > 0 }, id: \.outcome) { entry in
                         HStack(spacing: 4) {
                             Circle()
                                 .fill(Self.color(for: entry.outcome))
@@ -167,6 +177,8 @@ struct StatisticsSettingsView: View {
                             Text("\(Self.label(for: entry.outcome)) \(entry.count)")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
                         }
                     }
                 }
@@ -188,7 +200,155 @@ struct StatisticsSettingsView: View {
             let noun = stats.fillersRemoved == 1 ? "filler word" : "filler words"
             parts.append("and had \(stats.fillersRemoved.formatted()) \(noun) cleaned out")
         }
-        return parts.joined(separator: ", ") + "."
+        return parts.joined(separator: ", ") + "." + fallbackSplitNote
+    }
+
+    /// The two fallbacks mean different things, and which one dominates says
+    /// what to do about it: latency points at the engine, other points at the
+    /// prompt.
+    private var fallbackSplitNote: String {
+        let waited = store.outcomeCount(.usedTranscriptNoRewrite)
+        let judged = store.outcomeCount(.usedTranscript)
+        guard waited + judged > 0 else { return "" }
+        if waited == 0 {
+            return " Every one of those had a rewrite on screen that you turned down."
+        }
+        if judged == 0 {
+            return " Every one of those was before a rewrite had arrived — impatience, not a bad rewrite."
+        }
+        return String(
+            format: " %.0f%% of those fell back before a rewrite had even arrived, which is a"
+                + " latency problem rather than a quality one.",
+            store.latencyFallbackShare * 100
+        )
+    }
+
+    // MARK: - Spend
+
+    @ViewBuilder
+    private var spend: some View {
+        let rows = store.spendByModel
+        // Shown when there is spend to report *or* free work to price, so
+        // someone who has only ever run locally still sees what that saved.
+        if !rows.isEmpty || store.freeRequestCount > 0 {
+            StatSection(title: "What the engines cost", trailing: cacheNote) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !rows.isEmpty {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(Self.money(store.totalSpend))
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            Text("estimated, all time")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if store.totalBilledRequests > 0 {
+                                Text("^[\(store.totalBilledRequests) billed request](inflect: true) · \(Self.perRequest(store.totalSpend, over: store.totalBilledRequests)) each")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+
+                    ForEach(rows) { row in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(Self.shortModel(row.model))
+                                    .font(.system(size: 11, weight: .medium))
+                                Spacer()
+                                Text(row.cost.map(Self.money) ?? "rate unknown")
+                                    .font(.system(size: 11, design: .rounded))
+                                    .foregroundStyle(row.cost == nil ? .tertiary : .primary)
+                            }
+                            Text(Self.tokenBreakdown(row))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    projection
+
+                    // The rates are stated rather than implied: Bedrock prices
+                    // Claude separately from the first-party API, so this is an
+                    // estimate built on published rates, not a copy of the bill.
+                    Text(rateDisclosure)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    /// What the free engines would have cost on the hosted model currently
+    /// configured. The interesting number is not the total but the ratio: it
+    /// says what running locally is worth per month.
+    @ViewBuilder
+    private var projection: some View {
+        let target = AppSettings.shared.bedrockModelID
+        if let p = store.projectedSpend(onModel: target), p.requests > 0 {
+            Divider().padding(.vertical, 2)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(Self.money(p.cost))
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Text("had those run on \(Self.shortModel(target))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("^[\(p.requests) local rewrite](inflect: true) · \(Self.perRequest(p.cost, over: p.requests)) each")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            Text(projectionNote(hitRate: p.hitRate))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func projectionNote(hitRate: Double) -> String {
+        String(
+            format: "Priced from the local model's own token counts at %.0f%% cache reuse, "
+                + "so it is the right order of magnitude rather than an exact bill -- "
+                + "Qwen and Claude count tokens differently.",
+            hitRate * 100
+        )
+    }
+
+    private var cacheNote: String? {
+        guard store.cacheHitRate > 0 else { return nil }
+        return String(format: "%.0f%% of input served from cache", store.cacheHitRate * 100)
+    }
+
+    private var rateDisclosure: String {
+        "Token counts are exact, read from each response. Dollar figures apply "
+            + "published Anthropic list rates and are an estimate — Amazon Bedrock "
+            + "bills separately, so check against your AWS invoice before trusting "
+            + "the total."
+    }
+
+    private static func money(_ amount: Double) -> String {
+        if amount < 0.01 { return String(format: "$%.4f", amount) }
+        if amount < 1 { return String(format: "$%.3f", amount) }
+        return String(format: "$%.2f", amount)
+    }
+
+    private static func perRequest(_ total: Double, over count: Int) -> String {
+        guard count > 0 else { return "--" }
+        return money(total / Double(count))
+    }
+
+    private static func tokenBreakdown(_ row: StatsStore.Spend) -> String {
+        var parts = ["\(compact(row.input)) in", "\(compact(row.output)) out"]
+        if row.cacheRead > 0 { parts.append("\(compact(row.cacheRead)) cached") }
+        if row.cacheWrite > 0 { parts.append("\(compact(row.cacheWrite)) cache writes") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// "us.anthropic.claude-sonnet-5" -> "Sonnet 5"
+    private static func shortModel(_ id: String) -> String {
+        EngineChoice.shortModel(id)
     }
 
     // MARK: - Latency
@@ -410,6 +570,10 @@ struct StatisticsSettingsView: View {
     private static func color(for outcome: SessionLog.Outcome) -> Color {
         switch outcome {
         case .used: return .accentColor
+        // Two shades of the same warning colour rather than two unrelated
+        // hues: both are the rewrite not being used, and reading them as one
+        // block and then as two halves is the point.
+        case .usedTranscriptNoRewrite: return .yellow
         case .usedTranscript: return .orange
         case .cleared: return .secondary.opacity(0.5)
         case .abandoned: return .secondary.opacity(0.25)
@@ -419,7 +583,8 @@ struct StatisticsSettingsView: View {
     private static func label(for outcome: SessionLog.Outcome) -> String {
         switch outcome {
         case .used: return "used"
-        case .usedTranscript: return "fell back"
+        case .usedTranscriptNoRewrite: return "fallback (latency)"
+        case .usedTranscript: return "fallback (other)"
         case .cleared: return "cleared"
         case .abandoned: return "abandoned"
         }

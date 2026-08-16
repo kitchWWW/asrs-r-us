@@ -33,11 +33,21 @@ enum TranscriptNormalizer {
         ("open parentheses", "(", true),
         ("open parenthesis", "(", true),
         ("open bracket", "(", true),
+        ("open parens", "(", true),
         ("open paren", "(", true),
         ("close parentheses", ")", false),
         ("close parenthesis", ")", false),
+        // "closed" and "end" are how the recognizer usually hears "close"
+        // here. None of these is a phrase anyone says about anything else.
+        ("closed parentheses", ")", false),
+        ("closed parenthesis", ")", false),
+        ("end parentheses", ")", false),
+        ("end parenthesis", ")", false),
         ("close bracket", ")", false),
+        ("close parens", ")", false),
+        ("closed parens", ")", false),
         ("close paren", ")", false),
+        ("closed paren", ")", false),
         ("open quote", "\u{201C}", true),
         ("close quote", "\u{201D}", false),
     ]
@@ -108,6 +118,14 @@ enum TranscriptNormalizer {
 
     /// Removes the artefacts substitution leaves behind: a space before a mark,
     /// and doubled spaces where a run was absorbed.
+    ///
+    /// The collisions are worth spelling out, because they are the visible
+    /// half of this file's job. The recognizer punctuates pauses, so a spoken
+    /// mark almost always lands next to one it already inserted: "system,
+    /// period" arrives as ",." and "statistics, close quote" as ",\u{201D}".
+    /// Both are mechanical -- there is exactly one right answer and no context
+    /// to weigh -- so they are resolved here rather than left for the model,
+    /// which was reproducing them verbatim.
     private static func tidy(_ text: String) -> String {
         var result = text
         for (pattern, template) in [

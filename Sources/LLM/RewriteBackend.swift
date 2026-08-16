@@ -19,6 +19,23 @@ enum RewriteBackendKind: String, CaseIterable, Identifiable, Codable {
         case .anthropic:         return "Anthropic API"
         }
     }
+
+    /// How long the transcript must be quiet before a rewrite fires.
+    ///
+    /// A rewrite goes out on *every* pause in speech, so the debounce is
+    /// really a rate limit, and the right rate depends on what a request
+    /// costs. Local inference costs nothing but electricity, so it can afford
+    /// to fire often and feel instant. A hosted model is billed per call, and
+    /// most of the calls a fast debounce buys are superseded a second later by
+    /// the next one -- paying for tokens nobody reads.
+    var defaultDebounceMilliseconds: Int {
+        switch self {
+        case .local:             return 200
+        case .appleIntelligence: return 300
+        case .bedrock:           return 600
+        case .anthropic:         return 600
+        }
+    }
 }
 
 /// Minimal surface the rewriter needs. Both backends stream text so the

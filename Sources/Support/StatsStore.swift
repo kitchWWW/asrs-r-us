@@ -75,9 +75,31 @@ final class StatsStore: ObservableObject {
         var firstTokenMS: [String: [String: Int]] = [:]
         var totalMS: [String: [String: Int]] = [:]
 
+        /// Billed token counts, keyed by model ID. Kept per model because the
+        /// rates differ per model and the mix changes over time.
+        var inputTokens: [String: Int] = [:]
+        var outputTokens: [String: Int] = [:]
+        var cacheWriteTokens: [String: Int] = [:]
+        var cacheReadTokens: [String: Int] = [:]
+        /// Billed requests per model -- the denominator for cost-per-rewrite.
+        var billedRequests: [String: Int] = [:]
+
+        /// The same counts for the engines that cost nothing. Kept apart so
+        /// they can never be mistaken for spend, and kept at all so the
+        /// question "what would this have cost on a hosted model" has a real
+        /// answer rather than an estimate from character counts.
+        var freeInputTokens: [String: Int] = [:]
+        var freeOutputTokens: [String: Int] = [:]
+        var freeCachedTokens: [String: Int] = [:]
+        var freeRequests: [String: Int] = [:]
+
         /// Set once the one-time import from `sessions.jsonl` has run, so a
         /// reinstall against an existing log does not double-count it.
         var backfilled = false
+
+        /// Set once the fallback counts recorded before latency and quality
+        /// fallbacks were told apart have been re-split from the log.
+        var fallbacksSplit = false
 
         init() {}
 
@@ -118,7 +140,17 @@ final class StatsStore: ObservableObject {
             corrections = value(.corrections, [:])
             firstTokenMS = value(.firstTokenMS, [:])
             totalMS = value(.totalMS, [:])
+            inputTokens = value(.inputTokens, [:])
+            outputTokens = value(.outputTokens, [:])
+            cacheWriteTokens = value(.cacheWriteTokens, [:])
+            cacheReadTokens = value(.cacheReadTokens, [:])
+            billedRequests = value(.billedRequests, [:])
+            freeInputTokens = value(.freeInputTokens, [:])
+            freeOutputTokens = value(.freeOutputTokens, [:])
+            freeCachedTokens = value(.freeCachedTokens, [:])
+            freeRequests = value(.freeRequests, [:])
             backfilled = value(.backfilled, false)
+            fallbacksSplit = value(.fallbacksSplit, false)
         }
     }
 
@@ -218,6 +250,30 @@ final class StatsStore: ObservableObject {
         scheduleSave()
     }
 
+    /// One billed request's token counts, straight off the response.
+    ///
+    /// Only paid engines report usage -- the local model has no bill to track.
+    func recordUsage(_ usage: TokenUsage) {
+        let model = usage.model
+        stats.inputTokens[model, default: 0] += usage.inputTokens
+        stats.outputTokens[model, default: 0] += usage.outputTokens
+        stats.cacheWriteTokens[model, default: 0] += usage.cacheWriteTokens
+        stats.cacheReadTokens[model, default: 0] += usage.cacheReadTokens
+        stats.billedRequests[model, default: 0] += 1
+        scheduleSave()
+    }
+
+    /// One local request's token counts. Nothing is billed for these; they
+    /// exist so the local engine's usage can be priced hypothetically.
+    func recordLocalUsage(_ usage: TokenUsage) {
+        let model = usage.model
+        stats.freeInputTokens[model, default: 0] += usage.inputTokens
+        stats.freeOutputTokens[model, default: 0] += usage.outputTokens
+        stats.freeCachedTokens[model, default: 0] += usage.cacheReadTokens
+        stats.freeRequests[model, default: 0] += 1
+        scheduleSave()
+    }
+
     // MARK: - Backfill
 
     /// Imports the existing session log once, so the tab does not open at zero
@@ -251,6 +307,45 @@ final class StatsStore: ObservableObject {
                 wasEdited: entry.editedRewrite != nil
             )
         }
+    }
+
+    /// Re-splits fallbacks recorded before the two kinds were told apart.
+    ///
+    /// Everything logged as `usedTranscript` up to now lumped together "the
+    /// rewrite was wrong" and "no rewrite had arrived yet", and the second is
+    /// by far the more common of the two. The session log holds the rewrite
+    /// for each of those sessions, so the answer is on disk rather than
+    /// guessed at: an empty rewrite means the user was waiting.
+    ///
+    /// Only sessions the log can actually account for are moved, capped at the
+    /// counter itself. If logging was off for part of the history the log will
+    /// be short, and the leftovers stay where they are -- undercounting the
+    /// latency half rather than inventing sessions to fill it.
+    func splitLegacyFallbacksIfNeeded() {
+        guard !stats.fallbacksSplit else { return }
+        stats.fallbacksSplit = true
+        defer { scheduleSave() }
+
+        let legacyKey = SessionLog.Outcome.usedTranscript.rawValue
+        let legacy = stats.outcomes[legacyKey] ?? 0
+        guard legacy > 0 else { return }
+        guard let text = try? String(contentsOf: SessionLog.shared.fileURL, encoding: .utf8) else { return }
+
+        let decoder = JSONDecoder.stats
+        var waited = 0
+        for line in text.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let entry = try? decoder.decode(SessionLog.Record.self, from: data),
+                  entry.outcome == .usedTranscript,
+                  entry.rewrite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            waited += 1
+        }
+
+        let moved = min(waited, legacy)
+        guard moved > 0 else { return }
+        stats.outcomes[legacyKey] = legacy - moved
+        stats.outcomes[SessionLog.Outcome.usedTranscriptNoRewrite.rawValue, default: 0] += moved
     }
 
     // MARK: - Management
@@ -390,13 +485,32 @@ extension StatsStore {
         return Double(stats.edits) / Double(stats.sessionsEdited)
     }
 
+    func outcomeCount(_ outcome: SessionLog.Outcome) -> Int {
+        stats.outcomes[outcome.rawValue] ?? 0
+    }
+
+    /// Sessions that ended with the raw transcript rather than the rewrite,
+    /// for either reason.
     var fallbackRate: Double {
         guard stats.sessions > 0 else { return 0 }
-        return Double(stats.outcomes[SessionLog.Outcome.usedTranscript.rawValue] ?? 0) / Double(stats.sessions)
+        let fallbacks = outcomeCount(.usedTranscript) + outcomeCount(.usedTranscriptNoRewrite)
+        return Double(fallbacks) / Double(stats.sessions)
+    }
+
+    /// Fallbacks that happened with an empty output box, over all fallbacks.
+    /// High means the engine is too slow, not that it is writing badly -- the
+    /// fix is a faster engine or a shorter debounce, not a better prompt.
+    var latencyFallbackShare: Double {
+        let waited = outcomeCount(.usedTranscriptNoRewrite)
+        let total = waited + outcomeCount(.usedTranscript)
+        guard total > 0 else { return 0 }
+        return Double(waited) / Double(total)
     }
 
     var outcomeCounts: [(outcome: SessionLog.Outcome, count: Int)] {
-        let order: [SessionLog.Outcome] = [.used, .usedTranscript, .cleared, .abandoned]
+        let order: [SessionLog.Outcome] = [
+            .used, .usedTranscriptNoRewrite, .usedTranscript, .cleared, .abandoned,
+        ]
         return order.map { ($0, stats.outcomes[$0.rawValue] ?? 0) }
     }
 
@@ -505,6 +619,107 @@ extension StatsStore {
 
     var enginesWithLatency: [String] {
         stats.totalMS.keys.sorted()
+    }
+
+    /// Per-model spend, most expensive first. `cost` is nil for a model with
+    /// no rate on file -- tokens are still counted and shown.
+    struct Spend: Identifiable {
+        let model: String
+        let input: Int
+        let output: Int
+        let cacheWrite: Int
+        let cacheRead: Int
+        let requests: Int
+        let cost: Double?
+        var id: String { model }
+
+        var totalTokens: Int { input + output + cacheWrite + cacheRead }
+    }
+
+    var spendByModel: [Spend] {
+        let models = Set(stats.inputTokens.keys)
+            .union(stats.outputTokens.keys)
+            .union(stats.billedRequests.keys)
+
+        return models.map { model in
+            let usage = TokenUsage(
+                model: model,
+                inputTokens: stats.inputTokens[model] ?? 0,
+                outputTokens: stats.outputTokens[model] ?? 0,
+                cacheWriteTokens: stats.cacheWriteTokens[model] ?? 0,
+                cacheReadTokens: stats.cacheReadTokens[model] ?? 0
+            )
+            return Spend(
+                model: model,
+                input: usage.inputTokens,
+                output: usage.outputTokens,
+                cacheWrite: usage.cacheWriteTokens,
+                cacheRead: usage.cacheReadTokens,
+                requests: stats.billedRequests[model] ?? 0,
+                cost: ModelPricing.cost(of: usage)
+            )
+        }
+        .sorted { ($0.cost ?? 0) > ($1.cost ?? 0) }
+    }
+
+    /// What the free engines' work would have cost on a hosted model.
+    ///
+    /// Priced on the local model's own token counts, which is the honest
+    /// version of this number and also its main weakness: Qwen and Claude
+    /// tokenise differently, so the counts are the right order of magnitude
+    /// rather than exact.
+    ///
+    /// Caching is modelled from what actually happens on Bedrock rather than
+    /// assumed away. The app sends the same preamble every time behind a
+    /// `cache_control` block, so most input would be served from cache at a
+    /// tenth of the price -- ignoring that would overstate the figure several
+    /// times over. Where there is real Bedrock history the observed hit rate
+    /// is used; otherwise it falls back to the share the local server itself
+    /// reports reusing.
+    func projectedSpend(onModel modelID: String) -> (cost: Double, requests: Int, hitRate: Double)? {
+        guard let rates = ModelPricing.forModel(modelID) else { return nil }
+        let input = stats.freeInputTokens.values.reduce(0, +)
+        let output = stats.freeOutputTokens.values.reduce(0, +)
+        let requests = stats.freeRequests.values.reduce(0, +)
+        guard requests > 0, input + output > 0 else { return nil }
+
+        let observed = cacheHitRate
+        let localReuse = input > 0
+            ? Double(stats.freeCachedTokens.values.reduce(0, +)) / Double(input)
+            : 0
+        let hitRate = observed > 0 ? observed : localReuse
+
+        let cached = Double(input) * hitRate
+        let fresh = Double(input) - cached
+        let million = 1_000_000.0
+        let cost = fresh / million * rates.inputPerMTok
+            + cached / million * rates.cacheReadPerMTok
+            + Double(output) / million * rates.outputPerMTok
+        return (cost, requests, hitRate)
+    }
+
+    var freeRequestCount: Int {
+        stats.freeRequests.values.reduce(0, +)
+    }
+
+    /// Total estimated spend across every model with a known rate.
+    var totalSpend: Double {
+        spendByModel.compactMap(\.cost).reduce(0, +)
+    }
+
+    var totalBilledRequests: Int {
+        stats.billedRequests.values.reduce(0, +)
+    }
+
+    /// Share of input tokens served from cache. The preamble is deliberately
+    /// cached, so a low number here means the cache is being invalidated.
+    var cacheHitRate: Double {
+        let read = stats.cacheReadTokens.values.reduce(0, +)
+        let fresh = stats.inputTokens.values.reduce(0, +)
+            + stats.cacheWriteTokens.values.reduce(0, +)
+        let total = read + fresh
+        guard total > 0 else { return 0 }
+        return Double(read) / Double(total)
     }
 
     /// Exact percentile from a `value -> frequency` histogram.

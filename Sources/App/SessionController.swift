@@ -50,8 +50,8 @@ final class SessionController: ObservableObject {
     private var loggedCurrentSession = false
 
     init() {
-        dictation.onTranscriptChange = { [weak self] transcript in
-            self?.rewriter.transcriptChanged(transcript)
+        dictation.onTranscriptChange = { [weak self] transcript, isFinal in
+            self?.rewriter.transcriptChanged(transcript, isFinal: isFinal)
         }
         rewriter.isUserEditing = { [weak self] in
             guard let self, let last = self.lastUserEdit else { return false }
@@ -87,8 +87,11 @@ final class SessionController: ObservableObject {
 
     var isRecording: Bool { dictation.isRecording }
     var transcript: String { dictation.transcript }
+    /// Enabled once there is anything at all to insert, since Use falls back
+    /// to the transcript when the rewrite has not landed.
     var canInsert: Bool {
         !rewriter.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || canInsertTranscript
     }
 
     // MARK: - Session lifecycle
@@ -170,6 +173,45 @@ final class SessionController: ObservableObject {
         }
     }
 
+    // MARK: - Run now
+
+    /// Freezes the transcript where it stands and rewrites it immediately.
+    ///
+    /// Stopping the recognizer is what makes the transcript trustworthy at the
+    /// moment Run is pressed. `stop()` flushes the audio still buffered inside
+    /// it and turns the volatile tail -- the words it was still free to revise
+    /// -- into finalized text, so what gets sent is exactly what is on screen.
+    /// Starting again resumes the same dictation rather than beginning a new
+    /// one: `DictationEngine.start()` deliberately appends to `finalizedText`.
+    ///
+    /// The rewrite is fired between the two, so the request is already in
+    /// flight while the recogniser is coming back up.
+    func runRewriteNow() async {
+        guard !isRunningNow else { return }
+        isRunningNow = true
+        defer { isRunningNow = false }
+
+        let wasRecording = dictation.isRecording
+        if wasRecording { await dictation.stop() }
+
+        let frozen = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !frozen.isEmpty {
+            // Supersedes whatever is in flight or still waiting out the
+            // debounce; `flush` cancels both.
+            rewriter.flush(transcript: frozen)
+        }
+
+        if wasRecording { await dictation.start() }
+    }
+
+    /// True while `runRewriteNow` is tearing the recogniser down and back up,
+    /// so the button can't be pressed twice through that gap.
+    @Published private(set) var isRunningNow = false
+
+    var canRunNow: Bool {
+        !dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     // MARK: - User edits
 
     /// Called from the output editor whenever the user types.
@@ -182,21 +224,40 @@ final class SessionController: ObservableObject {
 
     // MARK: - Insertion
 
+    /// The Use button and its ⌘↩ shortcut.
+    ///
+    /// Falls through to the raw transcript when no rewrite has arrived yet.
+    /// Speaking quickly outruns the rewriter, and the alternative was watching
+    /// a dead button and then reaching for a second one -- so Use means "take
+    /// what is on screen", and what is on screen when the bottom box is empty
+    /// is the transcript. It is logged as the latency fallback it is, which is
+    /// what keeps the statistics honest about how often this happens.
     func useOutput() async -> Bool {
-        await use(rewriter.output)
+        let rewritten = rewriter.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard rewritten.isEmpty else { return await use(rewriter.output) }
+        return await use(dictation.transcript, outcome: .usedTranscriptNoRewrite)
     }
 
     /// Escape hatch: insert the raw transcript instead of the rewrite, for when
-    /// the model's version is not what the user wants.
+    /// the model's version is not what the user wants -- or has not arrived.
+    ///
+    /// Which of those two it was has to be settled here, before `use` cancels
+    /// the rewriter: with something in the output box the user read a rewrite
+    /// and rejected it, with an empty box they gave up waiting for one. Only a
+    /// completely empty box counts as waiting; a rewrite that is still
+    /// streaming is a rewrite the user could see and judge.
     func useTranscript() async -> Bool {
-        await use(dictation.transcript, isTranscript: true)
+        await use(
+            dictation.transcript,
+            outcome: canInsert ? .usedTranscript : .usedTranscriptNoRewrite
+        )
     }
 
     var canInsertTranscript: Bool {
         !dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func use(_ candidate: String, isTranscript: Bool = false) async -> Bool {
+    private func use(_ candidate: String, outcome: SessionLog.Outcome = .used) async -> Bool {
         let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isInserting else { return false }
 
@@ -216,7 +277,7 @@ final class SessionController: ObservableObject {
                 restorePasteboard: settings.restorePasteboard
             )
             DictationHistory.shared.record(text, profileName: profiles.active.name)
-            logSession(outcome: isTranscript ? .usedTranscript : .used)
+            logSession(outcome: outcome)
             didInsert = true
             return true
         } catch {
@@ -226,6 +287,23 @@ final class SessionController: ObservableObject {
     }
 
     // MARK: - Logging
+
+    /// Ends the recording, hands it to the compressor, and reports the name
+    /// the log should remember it by.
+    ///
+    /// Compression runs off the main actor because it shells out to a
+    /// converter, and dictation has just ended -- the panel is animating away
+    /// and nothing should be waiting on an encoder.
+    private func recordedAudioStem() -> String? {
+        guard let url = dictation.finishRecording() else { return nil }
+        Task.detached(priority: .utility) {
+            SessionAudio.compress(url)
+            let days = await AppSettings.shared.audioRetentionDays
+            let cap = await Int64(AppSettings.shared.audioMaxMegabytes) * 1_048_576
+            SessionAudio.prune(olderThanDays: days, maxBytes: cap)
+        }
+        return url.deletingPathExtension().lastPathComponent
+    }
 
     /// Writes the session that is on screen to the local log, once.
     ///
@@ -258,6 +336,11 @@ final class SessionController: ObservableObject {
                 recordingSeconds: Date().timeIntervalSince(sessionStartedAt),
                 targetBundleID: targetApp?.bundleIdentifier,
                 inputDevice: dictation.activeInputDeviceName,
+                // Closes the recording here so the file and the line of JSON
+                // that describes it are written from the same moment. The name
+                // recorded is the stem: the file is lossless for another
+                // second or so and then becomes the compressed one.
+                audioFile: recordedAudioStem(),
                 appVersion: version ?? "0"
             )
         )

@@ -21,8 +21,14 @@ final class SessionLog {
     enum Outcome: String, Codable {
         /// Inserted the rewritten text.
         case used
-        /// Inserted the raw transcript instead -- a signal the rewrite was wrong.
+        /// Inserted the raw transcript with a rewrite sitting right there --
+        /// a signal the rewrite was wrong.
         case usedTranscript
+        /// Inserted the raw transcript because no rewrite had arrived yet.
+        /// Kept apart from `usedTranscript` because the two say opposite
+        /// things about the model: one is a verdict on the rewrite, the other
+        /// is impatience with how long it was taking to produce one.
+        case usedTranscriptNoRewrite
         /// Wiped mid-session with the Clear button.
         case cleared
         /// Panel closed without inserting anything.
@@ -55,6 +61,10 @@ final class SessionLog {
         var recordingSeconds: Double
         var targetBundleID: String?
         var inputDevice: String?
+        /// File name inside the audio directory, when the session was
+        /// recorded. Optional so every record written before recording existed
+        /// still decodes.
+        var audioFile: String?
         var appVersion: String
     }
 

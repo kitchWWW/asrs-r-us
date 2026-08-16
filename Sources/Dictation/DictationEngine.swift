@@ -45,7 +45,11 @@ final class DictationEngine: ObservableObject {
     var isRecording: Bool { state == .recording }
 
     /// Called on every transcript change so callers can kick off a rewrite.
-    var onTranscriptChange: ((String) -> Void)?
+    ///
+    /// `isFinal` marks a result the recognizer has committed to: those words
+    /// will not be revised, so a rewrite of them is not speculative and does
+    /// not need to wait out a debounce.
+    var onTranscriptChange: ((_ transcript: String, _ isFinal: Bool) -> Void)?
 
     private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "dictation")
 
@@ -64,11 +68,17 @@ final class DictationEngine: ObservableObject {
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
+    private var dictationTranscriber: DictationTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
     private var recognizerTask: Task<Void, Never>?
     private var analyzerFormat: AVAudioFormat?
     private var feeder: AudioFeeder?
     private var levelTimer: Timer?
+
+    /// Lives across a stop/start pair so pressing Run mid-dictation does not
+    /// split the session into two files -- the same rule `finalizedText`
+    /// follows. `finishRecording` is what ends it.
+    private var recorder: SessionAudioRecorder?
 
     // MARK: - Control
 
@@ -109,7 +119,17 @@ final class DictationEngine: ObservableObject {
         log.info("dictation stopped")
     }
 
+    /// Closes the session's recording and reports where it landed. Called when
+    /// the session is written to the log, so the two land together.
+    @discardableResult
+    func finishRecording() -> URL? {
+        defer { recorder = nil }
+        return recorder?.finish()
+    }
+
     func reset() {
+        // A session nobody logged still has to release its file.
+        finishRecording()
         finalizedText = ""
         volatileText = ""
         if case .failed = state { state = .idle }
@@ -133,23 +153,64 @@ final class DictationEngine: ObservableObject {
         guard SpeechTranscriber.isAvailable else { throw DictationError.unavailable }
 
         let locale = await Self.resolveLocale()
+        let module: any SpeechModule
 
-        // `.progressiveTranscription` is the preset that emits volatile results
-        // as you speak; the plain `.transcription` preset only reports finals.
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
-        self.transcriber = transcriber
+        switch AppSettings.shared.recognizer {
+        case .punctuated:
+            // `.progressiveTranscription` is `[.volatileResults, .fastResults]`.
+            // `fastResults` finalises sooner by committing sooner, which costs
+            // a little accuracy -- measured over 19 real recordings it kept 10
+            // spoken punctuation words where volatile alone kept 12, with the
+            // same mark density. That is a small price for text that appears
+            // while you are still talking, so it stays on by default and the
+            // setting exists for anyone who would rather wait and be right.
+            let transcriber = SpeechTranscriber(
+                locale: locale,
+                transcriptionOptions: [],
+                reportingOptions: AppSettings.shared.fastRecognition
+                    ? [.volatileResults, .fastResults]
+                    : [.volatileResults],
+                attributeOptions: []
+            )
+            self.transcriber = transcriber
+            module = transcriber
+            try await ensureModelInstalled(module: transcriber, locale: locale,
+                                           installed: await SpeechTranscriber.installedLocales)
 
-        try await ensureModelInstalled(for: transcriber, locale: locale)
+        case .raw:
+            // Every transcription option is opt-in on this module, so an empty
+            // set is the whole point: no inserted punctuation, no emoji
+            // substitution, no profanity masking. What arrives is as close to
+            // the spoken words as the API offers, and the rewrite model
+            // punctuates it from scratch.
+            var hints: Set<DictationTranscriber.ContentHint> = []
+            if let configuration = await CustomLanguageModel.configuration(
+                terms: AppSettings.shared.dictionaryTerms, locale: locale
+            ) {
+                hints.insert(.customizedLanguage(modelConfiguration: configuration))
+            }
+            let transcriber = DictationTranscriber(
+                locale: locale,
+                contentHints: hints,
+                transcriptionOptions: [],
+                reportingOptions: [.volatileResults, .frequentFinalization],
+                attributeOptions: []
+            )
+            self.dictationTranscriber = transcriber
+            module = transcriber
+            try await ensureModelInstalled(module: transcriber, locale: locale,
+                                           installed: await DictationTranscriber.installedLocales)
+        }
 
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(
-            compatibleWith: [transcriber]
+            compatibleWith: [module]
         ) else { throw DictationError.noCompatibleAudioFormat }
         analyzerFormat = format
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = continuation
 
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let analyzer = SpeechAnalyzer(modules: [module])
         self.analyzer = analyzer
 
         // Bias the recognizer toward the user's vocabulary. Fixing a term here
@@ -173,19 +234,20 @@ final class DictationEngine: ObservableObject {
         try await analyzer.prepareToAnalyze(in: format)
         try await analyzer.start(inputSequence: stream)
 
+        // The two modules publish different result types, so the loop is
+        // written twice and the handling once.
         recognizerTask = Task { [weak self] in
             guard let self else { return }
             do {
-                for try await result in transcriber.results {
-                    let text = String(result.text.characters)
-                    await MainActor.run {
-                        if result.isFinal {
-                            self.appendFinalized(text)
-                            self.volatileText = ""
-                        } else {
-                            self.volatileText = text
-                        }
-                        self.onTranscriptChange?(self.transcript)
+                if let transcriber = await self.transcriber {
+                    for try await result in transcriber.results {
+                        await self.handle(text: String(result.text.characters),
+                                          isFinal: result.isFinal)
+                    }
+                } else if let transcriber = await self.dictationTranscriber {
+                    for try await result in transcriber.results {
+                        await self.handle(text: String(result.text.characters),
+                                          isFinal: result.isFinal)
                     }
                 }
             } catch {
@@ -197,6 +259,16 @@ final class DictationEngine: ObservableObject {
         }
     }
 
+    private func handle(text: String, isFinal: Bool) {
+        if isFinal {
+            appendFinalized(text)
+            volatileText = ""
+        } else {
+            volatileText = text
+        }
+        onTranscriptChange?(transcript, isFinal)
+    }
+
     private func appendFinalized(_ text: String) {
         let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !piece.isEmpty else { return }
@@ -205,17 +277,17 @@ final class DictationEngine: ObservableObject {
 
     /// The first run on a given locale may need to download the speech model.
     private func ensureModelInstalled(
-        for transcriber: SpeechTranscriber,
-        locale: Locale
+        module: any SpeechModule,
+        locale: Locale,
+        installed: [Locale]
     ) async throws {
-        let installed = await SpeechTranscriber.installedLocales
         let alreadyInstalled = installed.contains {
             $0.identifier(.bcp47) == locale.identifier(.bcp47)
         }
         guard !alreadyInstalled else { return }
 
         if let request = try await AssetInventory.assetInstallationRequest(
-            supporting: [transcriber]
+            supporting: [module]
         ) {
             log.info("downloading speech model for \(locale.identifier)")
             try await request.downloadAndInstall()
@@ -311,6 +383,10 @@ final class DictationEngine: ObservableObject {
                 name: activeInputDeviceName ?? "This microphone",
                 channels: Int(inputFormat.channelCount)
             )
+        }
+        if AppSettings.shared.recordSessionAudio {
+            if recorder == nil { recorder = SessionAudioRecorder(url: SessionAudio.newFileURL()) }
+            feeder.recorder = recorder
         }
         self.feeder = feeder
 
@@ -482,6 +558,7 @@ final class DictationEngine: ObservableObject {
         recognizerTask?.cancel()
         recognizerTask = nil
         transcriber = nil
+        dictationTranscriber = nil
         if let restore = defaultInputToRestore {
             AudioDevices.setDefaultInputDevice(restore)
             defaultInputToRestore = nil

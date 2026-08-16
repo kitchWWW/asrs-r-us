@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Statistics tab opens with real history instead of zeros on a machine
         // that has been dictating for months. No-ops after the first run.
         StatsStore.shared.backfillFromSessionLogIfNeeded()
+        StatsStore.shared.splitLegacyFallbacksIfNeeded()
 
         // Touch the tracker now so it starts observing app activations
         // immediately. Left lazy, it would not exist until the first menu click
