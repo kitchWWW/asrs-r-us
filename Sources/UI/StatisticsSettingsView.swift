@@ -445,6 +445,7 @@ struct StatisticsSettingsView: View {
             let map = store.hourHeatmap
             let peak = max(map.flatMap { $0 }.max() ?? 1, 1)
             VStack(alignment: .leading, spacing: 2) {
+                hourAxis
                 ForEach(0..<7, id: \.self) { weekday in
                     HStack(spacing: 2) {
                         Text(Self.weekdayNames[weekday])
@@ -462,6 +463,30 @@ struct StatisticsSettingsView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The hour scale above the heatmap. Every column keeps a slot so the
+    /// labels line up with the cells below, but only every third one is
+    /// filled -- 24 labels at this width would be an unreadable smear. The
+    /// label is drawn in an overlay so a wide one like "12am" spills over its
+    /// neighbours instead of stretching its own column out of alignment.
+    private var hourAxis: some View {
+        HStack(spacing: 2) {
+            Color.clear
+                .frame(width: 24, height: 10)
+            ForEach(0..<24, id: \.self) { hour in
+                Color.clear
+                    .frame(height: 10)
+                    .overlay(alignment: .leading) {
+                        if hour % 3 == 0 {
+                            Text(Self.hourLabel(hour))
+                                .font(.system(size: 8))
+                                .foregroundStyle(.tertiary)
+                                .fixedSize()
+                        }
+                    }
             }
         }
     }
