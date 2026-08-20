@@ -7,10 +7,15 @@ import os
 /// `Self` cannot be referenced from a stored property initializer.
 let waveformSampleCount = 22
 
-/// Streaming on-device speech recognition built on macOS 26's `SpeechAnalyzer`
-/// / `SpeechTranscriber`.
+/// Streaming speech recognition, whichever recogniser is selected.
 ///
-/// The transcriber emits two kinds of result: *volatile* (a best guess for
+/// This owns the microphone, the device binding, the level meter and the
+/// session recording. Which recogniser turns the audio into words is behind
+/// `RecognizerBackend`, so Apple's in-process modules and the sidecar models
+/// swap without any of that changing. `configurePipeline()` is the only place
+/// that knows the difference.
+///
+/// A recogniser emits two kinds of result: *volatile* (a best guess for
 /// audio still in flight, replaced as more arrives) and *final* (locked in).
 /// We keep them separate so the UI can show settled text plainly and in-flight
 /// text dimmed, and so downstream consumers can debounce on the combined value.
@@ -53,6 +58,15 @@ final class DictationEngine: ObservableObject {
 
     private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "dictation")
 
+    /// Supervises the sidecar process for the recognisers that need one.
+    /// Held here rather than created per session so the model is not reloaded
+    /// on every press of F7.
+    let serverManager: RecognizerServerManager
+
+    init(serverManager: RecognizerServerManager) {
+        self.serverManager = serverManager
+    }
+
     /// Recreated for every session -- see `startAudio()`.
     private var audioEngine = AVAudioEngine()
     private var configObserver: NSObjectProtocol?
@@ -64,13 +78,30 @@ final class DictationEngine: ObservableObject {
     private var rebuildCount = 0
     private var lastRebuildAt: Date?
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
-    private var analyzer: SpeechAnalyzer?
-    private var transcriber: SpeechTranscriber?
-    private var dictationTranscriber: DictationTranscriber?
-    private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
-    private var recognizerTask: Task<Void, Never>?
+    /// The recogniser doing the work this session. Rebuilt per session, so
+    /// changing the setting between sessions takes effect without a restart.
+    private var backend: (any RecognizerBackend)?
+    /// Which recogniser `backend` is, kept for the session log and so the
+    /// rewrite service can ask about revision behaviour.
+    private(set) var activeRecognizer: RecognizerChoice = .punctuated
     private var analyzerFormat: AVAudioFormat?
     private var feeder: AudioFeeder?
+    /// Text finalised by earlier start/stop cycles in this same session, which
+    /// the current backend knows nothing about. See `handle(text:isFinal:)`.
+    private var carriedText = ""
+    /// Set when several recognisers are running, so their disagreement can be
+    /// read off when a rewrite is assembled.
+    private weak var alternateSource: FanOutRecognizerBackend?
+
+    /// What the other recognisers heard, for the rewrite prompt. Empty unless
+    /// cross-checking is on.
+    var alternateTranscripts: [(name: String, text: String)] {
+        guard let alternateSource else { return [] }
+        return alternateSource.alternates
+            .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { (name: $0.key.shortName, text: $0.value) }
+            .sorted { $0.name < $1.name }
+    }
     private var levelTimer: Timer?
 
     /// Lives across a stop/start pair so pressing Run mid-dictation does not
@@ -123,6 +154,9 @@ final class DictationEngine: ObservableObject {
     func stop() async {
         guard state == .recording || state == .preparing else { return }
         await teardown()
+        // Whatever this backend produced becomes the prefix the next one
+        // continues from.
+        carriedText = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if case .failed = state {} else { state = .idle }
         log.info("dictation stopped")
     }
@@ -138,6 +172,7 @@ final class DictationEngine: ObservableObject {
     func reset() {
         // A session nobody logged still has to release its file.
         finishRecording()
+        carriedText = ""
         finalizedText = ""
         volatileText = ""
         if case .failed = state { state = .idle }
@@ -158,164 +193,79 @@ final class DictationEngine: ObservableObject {
     // MARK: - Pipeline
 
     private func configurePipeline() async throws {
-        guard SpeechTranscriber.isAvailable else { throw DictationError.unavailable }
+        let choice = AppSettings.shared.recognizer
+        activeRecognizer = choice
 
-        let locale = await Self.resolveLocale()
-        let module: any SpeechModule
-
-        switch AppSettings.shared.recognizer {
-        case .punctuated:
-            // `.progressiveTranscription` is `[.volatileResults, .fastResults]`.
-            // `fastResults` finalises sooner by committing sooner, which costs
-            // a little accuracy -- measured over 19 real recordings it kept 10
-            // spoken punctuation words where volatile alone kept 12, with the
-            // same mark density. That is a small price for text that appears
-            // while you are still talking, so it stays on by default and the
-            // setting exists for anyone who would rather wait and be right.
-            let transcriber = SpeechTranscriber(
-                locale: locale,
-                transcriptionOptions: [],
-                reportingOptions: AppSettings.shared.fastRecognition
-                    ? [.volatileResults, .fastResults]
-                    : [.volatileResults],
-                attributeOptions: []
-            )
-            self.transcriber = transcriber
-            module = transcriber
-            try await ensureModelInstalled(module: transcriber, locale: locale,
-                                           installed: await SpeechTranscriber.installedLocales)
-
-        case .raw:
-            // Every transcription option is opt-in on this module, so an empty
-            // set is the whole point: no inserted punctuation, no emoji
-            // substitution, no profanity masking. What arrives is as close to
-            // the spoken words as the API offers, and the rewrite model
-            // punctuates it from scratch.
-            var hints: Set<DictationTranscriber.ContentHint> = []
-            if let configuration = await CustomLanguageModel.configuration(
-                terms: AppSettings.shared.dictionaryTerms, locale: locale
-            ) {
-                hints.insert(.customizedLanguage(modelConfiguration: configuration))
-            }
-            let transcriber = DictationTranscriber(
-                locale: locale,
-                contentHints: hints,
-                transcriptionOptions: [],
-                reportingOptions: [.volatileResults, .frequentFinalization],
-                attributeOptions: []
-            )
-            self.dictationTranscriber = transcriber
-            module = transcriber
-            try await ensureModelInstalled(module: transcriber, locale: locale,
-                                           installed: await DictationTranscriber.installedLocales)
+        // One place decides which recogniser runs; everything downstream of
+        // here is the same for all of them.
+        func make(_ choice: RecognizerChoice) -> any RecognizerBackend {
+            choice.isSidecar
+                ? SocketRecognizerBackend(choice: choice, manager: serverManager)
+                : AppleRecognizerBackend(choice: choice)
         }
 
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(
-            compatibleWith: [module]
-        ) else { throw DictationError.noCompatibleAudioFormat }
+        let backend: any RecognizerBackend
+        if AppSettings.shared.crossCheckRecognizers {
+            // A fixed pair rides along, not "everything else" -- see
+            // `RecognizerChoice.crossCheckSet` for why two beats three.
+            let others = RecognizerChoice.crossCheckSet.filter { $0 != choice }
+            let fanOut = FanOutRecognizerBackend(
+                primary: make(choice),
+                secondaries: others.map { ($0, make($0)) }
+            )
+            alternateSource = fanOut
+            backend = fanOut
+        } else {
+            alternateSource = nil
+            backend = make(choice)
+        }
+        self.backend = backend
+
+        try await backend.prepare()
+        guard let format = backend.inputFormat else {
+            throw DictationError.noCompatibleAudioFormat
+        }
         analyzerFormat = format
 
-        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        inputBuilder = continuation
-
-        let analyzer = SpeechAnalyzer(modules: [module])
-        self.analyzer = analyzer
-
-        // Bias the recognizer toward the user's vocabulary. Fixing a term here
-        // means the wrong word is never produced, which beats asking the
-        // rewrite model to detect and repair it afterwards -- especially for
-        // acronyms and proper nouns, where it has no context to work from.
-        let terms = AppSettings.shared.dictionaryTerms
-        if !terms.isEmpty {
-            let context = AnalysisContext()
-            context.contextualStrings[.general] = terms
-            do {
-                try await analyzer.setContext(context)
-                log.info("biasing recognizer with \(terms.count) dictionary terms")
-            } catch {
-                // Biasing is an enhancement; a failure here must not stop
-                // dictation from working.
-                log.error("could not set contextual strings: \(error.localizedDescription)")
-            }
-        }
-
-        try await analyzer.prepareToAnalyze(in: format)
-        try await analyzer.start(inputSequence: stream)
-
-        // The two modules publish different result types, so the loop is
-        // written twice and the handling once.
-        recognizerTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                if let transcriber = await self.transcriber {
-                    for try await result in transcriber.results {
-                        await self.handle(text: String(result.text.characters),
-                                          isFinal: result.isFinal)
-                    }
-                } else if let transcriber = await self.dictationTranscriber {
-                    for try await result in transcriber.results {
-                        await self.handle(text: String(result.text.characters),
-                                          isFinal: result.isFinal)
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.log.error("recognizer stream ended: \(error.localizedDescription)")
-                    self.state = .failed(Self.describe(error))
-                }
-            }
+        try await backend.start { [weak self] result in
+            self?.handle(text: result.text, isFinal: result.isFinal)
         }
     }
 
+    /// A backend always reports the whole utterance, never a delta -- see the
+    /// note on `RecognizerResult`. So this assigns rather than appends; the
+    /// accumulation that used to live here moved into the Apple backend, which
+    /// is the only one that receives segments.
+    ///
+    /// `carriedText` is what makes resuming work. A backend is built per
+    /// session and starts with nothing, so without this, pressing Stop and then
+    /// Record again would replace the dictation so far instead of continuing
+    /// it -- the behaviour `start()` promises and `reset()` is the only thing
+    /// allowed to undo.
     private func handle(text: String, isFinal: Bool) {
+        let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whole = carriedText.isEmpty
+            ? piece
+            : (piece.isEmpty ? carriedText : carriedText + " " + piece)
+
         if isFinal {
-            appendFinalized(text)
+            finalizedText = whole
             volatileText = ""
         } else {
-            volatileText = text
+            // Nothing new yet: leave what is already on screen alone rather
+            // than blanking it, which some recognisers would do between
+            // utterances.
+            guard !piece.isEmpty else { return }
+            finalizedText = ""
+            volatileText = whole
         }
         onTranscriptChange?(transcript, isFinal)
-    }
-
-    private func appendFinalized(_ text: String) {
-        let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !piece.isEmpty else { return }
-        finalizedText = finalizedText.isEmpty ? piece : finalizedText + " " + piece
-    }
-
-    /// The first run on a given locale may need to download the speech model.
-    private func ensureModelInstalled(
-        module: any SpeechModule,
-        locale: Locale,
-        installed: [Locale]
-    ) async throws {
-        let alreadyInstalled = installed.contains {
-            $0.identifier(.bcp47) == locale.identifier(.bcp47)
-        }
-        guard !alreadyInstalled else { return }
-
-        if let request = try await AssetInventory.assetInstallationRequest(
-            supporting: [module]
-        ) {
-            log.info("downloading speech model for \(locale.identifier)")
-            try await request.downloadAndInstall()
-        }
-        // Reserving keeps the model resident so later sessions start instantly.
-        _ = try? await AssetInventory.reserve(locale: locale)
-    }
-
-    private static func resolveLocale() async -> Locale {
-        let current = Locale.current
-        if let match = await SpeechTranscriber.supportedLocale(equivalentTo: current) {
-            return match
-        }
-        return Locale(identifier: "en-US")
     }
 
     // MARK: - Audio
 
     private func startAudio() async throws {
-        guard let analyzerFormat, let continuation = inputBuilder else {
+        guard let analyzerFormat, let backend else {
             throw DictationError.noCompatibleAudioFormat
         }
 
@@ -395,8 +345,14 @@ final class DictationEngine: ObservableObject {
         // Everything the audio thread touches is captured into this object up
         // front. The render callback must never hop actors or take locks, so
         // it deliberately holds no reference back to DictationEngine.
+        // Before the tap, never inside it: any converter a backend needs is
+        // built here, off the real-time audio thread. Note that this changes
+        // nothing about the device itself -- the engine, the inputNode read and
+        // the tap below are exactly as they were with a single recogniser.
+        backend.prepareToReceive(analyzerFormat)
+
         guard let feeder = AudioFeeder(
-            continuation: continuation,
+            sink: backend.sink,
             inputFormat: inputFormat,
             targetFormat: analyzerFormat
         ) else {
@@ -557,20 +513,12 @@ final class DictationEngine: ObservableObject {
         levelTimer?.invalidate()
         levelTimer = nil
         feeder = nil
-        inputBuilder?.finish()
-        inputBuilder = nil
 
-        // Flush trailing audio through the analyzer before dropping it, so the
-        // tail of the last sentence still lands as a final result.
-        if let analyzer {
-            try? await analyzer.finalizeAndFinishThroughEndOfInput()
-        }
-        analyzer = nil
-
-        recognizerTask?.cancel()
-        recognizerTask = nil
-        transcriber = nil
-        dictationTranscriber = nil
+        // Flush trailing audio through the recogniser before dropping it, so
+        // the tail of the last sentence still lands as a final result. Each
+        // backend knows what that means for itself.
+        await backend?.finish()
+        backend = nil
         // Drop the input node along with the engine. A stopped AVAudioEngine is
         // not an inert one -- its node stays instantiated and re-resolves when
         // the default input changes underneath it, which would open whatever
@@ -592,6 +540,9 @@ final class DictationEngine: ObservableObject {
         case microphoneDenied
         case speechDenied
         case unavailable
+        /// A sidecar recogniser could not be brought up. Carries the manager's
+        /// own message, which usually names the setup step that is missing.
+        case recognizerUnavailable(String)
         case noCompatibleAudioFormat
         case noAudioInput
         case onlyBluetoothInputs
@@ -606,6 +557,8 @@ final class DictationEngine: ObservableObject {
                 return "Speech recognition access denied. Enable it in System Settings > Privacy & Security > Speech Recognition."
             case .unavailable:
                 return "On-device speech recognition is unavailable on this Mac."
+            case let .recognizerUnavailable(message):
+                return message
             case .noCompatibleAudioFormat:
                 return "Could not negotiate an audio format with the speech recognizer."
             case .noAudioInput:

@@ -1,15 +1,19 @@
 import AVFoundation
 import Foundation
-import Speech
 
-/// Bridges the real-time audio thread to the speech analyzer's input stream.
+/// Bridges the real-time audio thread to whichever recogniser is running.
 ///
 /// This exists as a separate object so the render callback never has to touch
 /// `DictationEngine`, which is `@MainActor`. Hopping actors -- or calling
 /// `MainActor.assumeIsolated` -- from the audio thread would trap.
+///
+/// It takes a plain sink rather than the analyzer's input stream so the audio
+/// path does not know which recogniser it is feeding: Apple's backend yields
+/// into an `AsyncStream`, the sidecar backends convert and enqueue, and the
+/// conversion and level metering here are shared by both.
 final class AudioFeeder: @unchecked Sendable {
 
-    private let continuation: AsyncStream<AnalyzerInput>.Continuation
+    private let sink: @Sendable (AVAudioPCMBuffer) -> Void
 
     /// Set when the session is being recorded. It receives the same buffer the
     /// analyzer does, after conversion, so the file on disk is exactly what
@@ -30,11 +34,11 @@ final class AudioFeeder: @unchecked Sendable {
     /// lets the caller report that instead of feeding the recognizer a buffer
     /// whose layout it does not expect, which crashes inside the framework.
     init?(
-        continuation: AsyncStream<AnalyzerInput>.Continuation,
+        sink: @escaping @Sendable (AVAudioPCMBuffer) -> Void,
         inputFormat: AVAudioFormat,
         targetFormat: AVAudioFormat
     ) {
-        self.continuation = continuation
+        self.sink = sink
         self.targetFormat = targetFormat
         self.needsConversion = inputFormat != targetFormat
 
@@ -54,7 +58,7 @@ final class AudioFeeder: @unchecked Sendable {
 
         guard needsConversion else {
             recorder?.append(buffer)
-            continuation.yield(AnalyzerInput(buffer: buffer))
+            sink(buffer)
             return
         }
         // `converter` is non-nil whenever needsConversion is true; init fails
@@ -82,7 +86,7 @@ final class AudioFeeder: @unchecked Sendable {
 
         guard status != .error, output.frameLength > 0 else { return }
         recorder?.append(output)
-        continuation.yield(AnalyzerInput(buffer: output))
+        sink(output)
     }
 
     private static func peakLevel(of buffer: AVAudioPCMBuffer) -> Double {

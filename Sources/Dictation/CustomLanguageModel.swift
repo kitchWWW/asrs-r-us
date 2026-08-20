@@ -91,7 +91,13 @@ enum CustomLanguageModel {
     static func phrases(for terms: [String]) -> [String] {
         terms.flatMap { term -> [String] in
             let carriers: [String]
-            if term.contains("@") {
+            // Spoken punctuation carries its own sentences. The generic
+            // carriers below would actively work against it -- "the colon"
+            // and "a colon" teach the noun, which is the reading that must
+            // lose whenever the word is dictated.
+            if let spoken = SpokenPunctuation.carriers(for: term) {
+                carriers = spoken
+            } else if term.contains("@") {
                 carriers = ["my email is \(term)", "send it to \(term)", "email \(term)"]
             } else if term.contains("://") || term.contains(".com") || term.contains("/") {
                 carriers = ["go to \(term)", "open \(term)", "the link is \(term)"]

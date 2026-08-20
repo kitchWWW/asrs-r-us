@@ -8,7 +8,8 @@ import Foundation
 final class SessionController: ObservableObject {
 
     let settings = AppSettings.shared
-    let dictation = DictationEngine()
+    lazy var recognizerServer = RecognizerServerManager(settings: settings)
+    lazy var dictation = DictationEngine(serverManager: recognizerServer)
     let profiles = ProfileStore.shared
     let appProfiles = AppProfileMap.shared
     let editTracker = EditTracker()
@@ -19,6 +20,27 @@ final class SessionController: ObservableObject {
         editTracker: editTracker,
         server: server
     )
+
+    /// Brings the sidecar up ahead of the first press of F7, so a model is not
+    /// being paged in while the user is already talking.
+    ///
+    /// It used to also move the selected profile to a variant matching the
+    /// recogniser. That coupling is gone: which recogniser is running no longer
+    /// says anything about which profile should be used, and with several
+    /// running at once it could not have.
+    private func observeRecognizerChanges() {
+        settings.$recognizer
+            .removeDuplicates()
+            .sink { [weak self] choice in
+                guard let self else { return }
+                if choice.isSidecar {
+                    Task { await self.recognizerServer.start(for: choice) }
+                } else {
+                    self.recognizerServer.stop()
+                }
+            }
+            .store(in: &cancellables)
+    }
 
     /// The app that was frontmost when the panel opened -- the paste target.
     @Published private(set) var targetApp: NSRunningApplication?
@@ -51,8 +73,12 @@ final class SessionController: ObservableObject {
     private var loggedCurrentSession = false
 
     init() {
+        observeRecognizerChanges()
         dictation.onTranscriptChange = { [weak self] transcript, isFinal in
             self?.rewriter.transcriptChanged(transcript, isFinal: isFinal)
+        }
+        rewriter.alternateTranscripts = { [weak self] in
+            self?.dictation.alternateTranscripts ?? []
         }
         rewriter.isUserEditing = { [weak self] in
             guard let self, let last = self.lastUserEdit else { return false }
@@ -345,7 +371,11 @@ final class SessionController: ObservableObject {
                 endedAt: Date(),
                 outcome: outcome,
                 transcript: transcript,
-                normalizedTranscript: TranscriptNormalizer.normalize(transcript),
+                // Logged as it was actually sent, so a replayed session
+                // reproduces what the model saw rather than what it would see today.
+                normalizedTranscript: settings.normalizeInput
+                    ? TranscriptNormalizer.normalize(transcript)
+                    : transcript,
                 rewrite: rewriter.output,
                 editedRewrite: hasUserEdited ? rewriter.output : nil,
                 profile: profiles.active.name,

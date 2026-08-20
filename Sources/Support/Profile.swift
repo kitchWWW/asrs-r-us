@@ -15,6 +15,10 @@ struct Profile: Identifiable, Codable, Hashable {
         self.name = name
         self.prompt = prompt
     }
+
+    /// Older stores carry `persona` and `family` from when there was a profile
+    /// per recogniser. The synthesized decoder ignores keys it does not know,
+    /// so nothing is needed for them beyond not declaring them any more.
 }
 
 @MainActor
@@ -29,6 +33,10 @@ final class ProfileStore: ObservableObject {
         static let prunedSeeds = "prunedSeedProfilesV2"
         static let seededWorkPersonal = "seededWorkPersonalV1"
         static let refreshedStyles = "refreshedSeedStylesV1"
+        static let seededFamilies = "seededRecognizerFamiliesV1"
+        static let suffixedSeeds = "suffixedSeedProfilesV1"
+        static let carminNote = "personalCarminNoteV1"
+        static let collapsedToTwo = "collapsedToTwoProfilesV1"
     }
 
     @Published var profiles: [Profile] {
@@ -49,8 +57,11 @@ final class ProfileStore: ObservableObject {
 
     /// The profile a newly-seen app is assigned to.
     ///
-    /// Found by name rather than by position, so reordering the sidebar does
-    /// not quietly change what every unassigned app resolves to.
+    /// Found by persona rather than by position, so reordering the sidebar does
+    /// not quietly change what every unassigned app resolves to -- and by
+    /// persona rather than by name, so renaming a profile does not either.
+    /// The Apple variant is the anchor; `resolved(for:)` moves off it when the
+    /// recogniser changes.
     var defaultProfileID: Profile.ID {
         (profiles.first { $0.name == "Default" } ?? profiles[0]).id
     }
@@ -93,10 +104,49 @@ final class ProfileStore: ObservableObject {
             prepared = Self.refreshingSeedStyles(in: prepared)
             UserDefaults.standard.set(true, forKey: Key.refreshedStyles)
         }
-        if !UserDefaults.standard.bool(forKey: Key.prunedSeeds) {
-            let pruned = prepared.filter { !["Work", "Friends"].contains($0.name) }
-            if !pruned.isEmpty { prepared = pruned }
-            UserDefaults.standard.set(true, forKey: Key.prunedSeeds)
+        // The shared rules now read "Carmin" as a mistranscribed "comma", which
+        // is right for dictated prose and wrong for messages to the person of
+        // that name. Appended rather than pushed as a whole style section: a
+        // hand-tuned Personal prompt must survive this, and appending one
+        // paragraph cannot destroy wording the way a wholesale replace can.
+        if !UserDefaults.standard.bool(forKey: Key.carminNote) {
+            prepared = prepared.map { profile in
+                guard profile.name.hasPrefix("Personal"),
+                      !profile.prompt.contains("Carmin is his partner") else { return profile }
+                var updated = profile
+                updated.prompt = profile.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    + "\n" + Self.carminNote
+                return updated
+            }
+            UserDefaults.standard.set(true, forKey: Key.carminNote)
+        }
+        // Collapse back to two.
+        //
+        // A profile per persona per recogniser produced nine, which was more
+        // than anyone chose between and rested on a distinction that stopped
+        // existing once the recognisers began running together. The surviving
+        // pair keeps whatever wording had been tuned into the Apple variants,
+        // since those are the ones that had been in use; the rest go.
+        if !UserDefaults.standard.bool(forKey: Key.collapsedToTwo) {
+            var kept: [Profile] = []
+            for wanted in Self.personas.map(\.name) {
+                let match = prepared.first { $0.name == "\(wanted) (Apple)" }
+                    ?? prepared.first { $0.name == wanted }
+                var profile = match ?? Profile(
+                    name: wanted,
+                    prompt: Self.template(styleFor: Self.personas.first { $0.name == wanted }?.style)
+                )
+                profile.name = wanted
+                kept.append(profile)
+            }
+            // Anything the user made themselves is not a seed and survives.
+            let seededNames = Set(Self.personas.flatMap { persona in
+                ["\(persona.name) (Apple)", "\(persona.name) (NeMo)",
+                 "\(persona.name) (Vosk)", persona.name]
+            } + ["Work", "Work (Apple)", "Work (NeMo)", "Work (Vosk)"])
+            kept += prepared.filter { !seededNames.contains($0.name) }
+            prepared = kept
+            UserDefaults.standard.set(true, forKey: Key.collapsedToTwo)
         }
         profiles = prepared
 
@@ -113,8 +163,12 @@ final class ProfileStore: ObservableObject {
         // Always write back. Property observers do not fire during init, so the
         // `didSet` that normally persists `profiles` never runs here -- without
         // this, migrations and pruning applied in memory only and were silently
-        // lost on the next launch.
+        // lost on the next launch. The selection has exactly the same problem:
+        // when a migration removes the profile it pointed at, the fallback
+        // chosen above was never written, so the stale id sat on disk being
+        // re-resolved on every launch.
         persistProfiles()
+        UserDefaults.standard.set(selectedID.uuidString, forKey: Key.selected)
     }
 
     // MARK: - Mutation
@@ -214,6 +268,22 @@ final class ProfileStore: ObservableObject {
     /// still named "Work" and "Personal". Brian confirmed neither style section
     /// had been hand-edited before this ran; a later revision that cannot
     /// assume that should compare against the previous text first.
+    /// The Personal profile's override of the shared Carmin rule.
+    ///
+    /// Kept as its own constant because it is both seeded into new profiles as
+    /// part of `personalStyle` and appended to existing ones by a migration;
+    /// two copies of it would be two chances to disagree.
+    static let carminNote = """
+    - Carmin is his partner, and in this profile that reading wins. The shared
+    rules above say "Carmin" is usually a mistranscribed "comma", which is true
+    of work notes and dictated prose -- it is not true here. These are messages
+    to friends and family, the people he actually talks about, so treat
+    "Carmin" as her name unless the sentence plainly cannot support a person:
+    only a "Carmin" wedged between two complete clauses, where no one is being
+    addressed or described, is a comma. Her name is spelled Carmin, never
+    Carmen or carmine.
+    """
+
     private static func refreshingSeedStyles(in profiles: [Profile]) -> [Profile] {
         let replacements = ["Work": workStyle, "Personal": personalStyle]
         return profiles.map { profile in
@@ -227,55 +297,72 @@ final class ProfileStore: ObservableObject {
 
     // MARK: - Prompt templates
 
-    /// The rewriting rules every profile starts from. A profile's prompt is
-    /// this plus a style section, and is fully editable afterwards.
-    /// Final line of the base prompt. Used to find where the shared rules end
-    /// and a profile's own style section begins.
+    /// The last line of every base prompt, whichever family it belongs to.
+    ///
+    /// `upgradingLegacyPrompts` splits on this rather than on an exact copy of
+    /// a previous version, so prompt fixes reach existing profiles without
+    /// every superseded revision having to be kept around forever. All three
+    /// families end on it, which is what lets one marker serve them all.
     private static let baseTailMarker = "no quotation marks around the whole thing."
 
-    /// The rewriting rules every profile starts from. A profile's prompt is
-    /// this plus a style section, and is fully editable afterwards.
-    /// Previous default. Kept so profiles still carrying it can be upgraded
-    /// in place without clobbering user edits.
-    static let legacyBasePrompts: [String] = [
-        """
-        You rewrite raw voice-dictation transcripts into clean, well-formed text.
-
-        You will receive a live speech-to-text transcript. It may be mid-sentence, \
-        contain recognition errors, filler words, false starts, and no punctuation. \
-        Infer from the content what kind of writing the speaker is producing and \
-        format it the way that kind of writing is normally formatted.
-
-        Rules:
-        - Preserve the speaker's meaning, facts, and intent exactly. Never add \
-        information they did not say.
-        - Fix punctuation, capitalization, and obvious transcription errors.
-        - Remove filler ("um", "uh", "you know") and false starts.
-        - Obey spoken formatting commands ("new paragraph", "bullet point", \
-        "quote unquote") by applying them rather than transcribing them.
-        - If the transcript ends mid-sentence, rewrite what is there and stop. Do \
-        not invent an ending.
-        - When the user has manually edited your previous output, treat those edits \
-        as corrections and honor them in this and all later rewrites.
-
-        Output only the rewritten text. No preamble, no commentary, no code fences, \
-        no quotation marks around the whole thing.
-        """,
-    ]
-
+    /// The rewriting rules every profile starts from, in the shape the active
+    /// recogniser's output actually needs.
+    ///
+    /// Deliberately preservation-first. An earlier version led with its removal
+    /// rules, and small local models over-applied them -- dropping whole
+    /// clauses and hedges, which made the rewrite unusable and sent the user
+    /// back to copying the raw transcript. Deleting is now tightly scoped and
+    /// the length check gives the model a concrete way to catch itself.
+    ///
+    /// Three variants exist because the recognisers hand over genuinely
+    /// different text, not because the personas differ. Apple's modules
+    /// punctuate and capitalise on their own, so much of that variant is about
+    /// *undoing* marks nobody asked for. The sidecar models emit bare lowercase
+    /// words with no punctuation and no digits at all, so there is nothing to
+    /// undo and everything to add -- and each mangles the spoken punctuation
+    /// words differently, which is measured and named in its own variant.
+    ///
+    /// Every variant assumes nothing was pre-processed. That is what makes
+    /// `AppSettings.normalizeInput` safe to switch off: the normaliser only
+    /// ever removes work these prompts already describe.
     /// The rewriting rules every profile starts from.
     ///
-    /// Deliberately preservation-first. The previous version led with its
-    /// removal rules, and small local models over-applied them -- dropping
-    /// whole clauses and hedges, which made the rewrite unusable and sent the
-    /// user back to copying the raw transcript. Deleting is now tightly scoped
-    /// and the length check gives the model a concrete way to catch itself.
-    static let basePrompt = """
+    /// One prompt, not one per recogniser. There used to be three, chosen by
+    /// whichever recogniser was running, which made sense while exactly one ran
+    /// at a time. Now the app cross-checks -- a bare-words transducer and
+    /// Apple's punctuating module hear the same audio and both readings reach
+    /// the model -- so a prompt written for one shape would be wrong about the
+    /// other half of what it is being shown. This describes both.
+    ///
+    /// Deliberately preservation-first. An earlier version led with its removal
+    /// rules, and small local models over-applied them -- dropping whole
+    /// clauses and hedges, which made the rewrite unusable and sent the user
+    /// back to copying the raw transcript. Deleting is now tightly scoped and
+    /// the length check gives the model a concrete way to catch itself.
+    ///
+    /// It assumes nothing was pre-processed, which is what makes
+    /// `AppSettings.normalizeInput` safe to switch off: the normaliser only
+    /// ever removes work this prompt already describes.
+    static let basePrompt = barePrompt(mangles: recognizerMangles)
+
+    private static func barePrompt(mangles: String) -> String {
+        """
     You clean up raw voice-dictation transcripts. This is a transcription \
     clean-up task, not an editing, summarizing, or rewriting-for-brevity task.
 
-    The input is live speech-to-text. It may stop mid-sentence and will contain \
-    recognition errors, disfluencies, and little or no punctuation.
+    The input is live speech-to-text from a recognizer that writes down words \
+    and nothing else. Read that literally: the text arrives with no \
+    punctuation of any kind, no capital letters, and no digits. Numbers come \
+    spelled out as words. Apostrophes in contractions are the only marks you \
+    will see. It may stop mid-sentence, and it will contain recognition errors \
+    and disfluencies.
+
+    So every mark and every capital in your output is one you put there. \
+    Nothing has been converted ahead of you and there is nothing to undo: no \
+    marks the recognizer invented, no capitals it guessed at, and no spoken \
+    punctuation word that has already become a symbol. That makes this job \
+    simpler than it sounds -- punctuate the words in front of you as though \
+    writing them down for the first time.
 
     THE ONE HARD RULE: keep everything the speaker actually said. Every fact, \
     name, number, question, caveat, aside, joke, and opinion in the input must \
@@ -284,7 +371,10 @@ final class ProfileStore: ObservableObject {
     something is filler or content, keep it.
 
     Change only this:
-    - Add punctuation, capitalization, and paragraph breaks.
+    - Add all punctuation, all capitalization, and all paragraph breaks. None \
+    of it is there yet. Capitalize the first word of every sentence, the \
+    pronoun "I", and every proper noun -- names, places, products, languages, \
+    days, months.
     - Fix clear speech-to-text errors using surrounding context.
     - Delete only meaningless disfluencies: "um", "uh", "er", stutters, and \
     abandoned false starts that the speaker immediately restated.
@@ -294,95 +384,62 @@ final class ProfileStore: ObservableObject {
     "semicolon" -> ; , "dash" -> -- , "open quote" / "close quote" -> " , \
     "open paren" / "close paren" -> ( ) , "new line" or "enter" -> a line \
     break, "new paragraph" -> a blank line, "bullet point" -> a list item.
+    - Every one of those words that was dictation is still sitting in the text \
+    as a word, because this recognizer never converts them. If one survives \
+    into your output, that is a mistake you made. Equally, a mark you write \
+    has to be justified by the sentence needing it or by the speaker having \
+    said its name.
     - Judge those by context. A speaker dictating punctuation says it where the \
     punctuation belongs; a speaker talking *about* punctuation does not. In \
     "the comma is in the wrong place" or "she gave a period drama a try", the \
     word is content -- leave it. When in doubt, prefer the literal word, since \
     a stray "period" is easier to spot and fix than a silently deleted one.
-    - A spoken punctuation word that sits beside the mark it names, as in "ship \
-    it period." , is one piece of punctuation: keep the mark and drop the word. \
-    No spoken punctuation word should survive into the output, and never emit \
-    repeated punctuation such as ".." or ",," or ".," -- one mark is always \
-    right.
-    - Re-punctuate freely. Speech-to-text punctuates pauses rather than \
-    grammar: it drops a comma wherever the speaker drew breath and a period \
-    wherever they stopped to think, chopping one thought into fragments and \
-    capitalizing mid-sentence. Join those fragments back into one clear \
-    sentence, drop the commas and periods that were never meant, and fix the \
-    capitalization a false period left behind -- including an ordinary word \
-    the recognizer capitalized mid-sentence for no reason. Re-punctuating \
-    never changes the wording: every word the speaker said is still there \
-    afterwards, in the same order.
-    - Never leave two marks against each other, or a mark against the inside \
-    of a bracket or quotation. Keep the one that carries meaning and drop the \
-    other.
+    - Punctuate the sentence structure too, not only the marks that were \
+    spoken. Nobody dictates every comma they need, so add the ones ordinary \
+    writing requires and break the text into sentences and paragraphs where \
+    the sense changes. Adding punctuation never changes the wording: every \
+    word the speaker said is still there afterwards, in the same order.
+    - Never emit repeated punctuation such as ".." or ",," or ".," -- one mark \
+    is always right -- and never leave a mark against the inside of a bracket \
+    or quotation.
     - Almost never use an ellipsis. Do not write "..." for a pause, a trailing \
     thought, or an unfinished sentence. End the sentence or let it run.
     - If you are working on a short fragment, or the first sentence is \
-    incomplete, consider if the first half of the sentence has been written \
-    somewhere else, and if so, leave the beginning uncapitalized. NOTE: the ASR \
-    will always capitalize the first word, so you cannot trust that as the start.
+    incomplete, consider whether the first half of the sentence was written \
+    somewhere else, and if so leave the beginning uncapitalized.
 
-    Homophones and mistranscriptions: speech-to-text writes the commonest \
-    spelling of a sound, so a wrong word arrives fully spelled and \
-    grammatical, and only the sentence around it gives it away. Read every \
-    sentence for sense, and where the word written cannot be what the speaker \
-    meant but a word that sounds the same can, write the one that fits -- \
-    their / there / they're, its / it's, ad / add, piece / peace, \
-    base / bass, affect / effect, peak / peek, and their kind.
-    - Mistranscribed terms count too. A name, a technical term, or a piece of \
-    jargon the recognizer does not know comes back as the ordinary words it \
-    sounds like: "a sink" for "async", "get pull" for "git pull", "four loop" \
-    for "for loop", "pseudo" for "sudo". Write what the speaker meant.
-    - This swaps one word for a word that sounds the same. It is not a licence \
-    to reword: do not change how many words there are, do not touch a word \
-    that already fits, and never substitute a word that sounds different. If \
-    both readings make sense, keep what is written. Never respell a name or a \
-    term the speaker uses consistently just because it looks unusual.
+    \(homophoneRules)
+    \(mangles)
 
     Brackets, quotes, and colons: these are the conversions that most often go \
-    wrong, with the spoken word left sitting in the output and no mark \
-    written. When the speaker is dictating one, write the mark.
-    - "open parentheses", "open parenthesis", "open paren", and the frequent \
-    mistranscription "open parent" all mean ( . "close parentheses", "closed \
-    parenthesis", "close paren", and "end parentheses" all mean ) . Some \
-    arrive already converted to the character; finish the ones that did not, \
-    and never leave the stray word beside the mark: "open parent the fast \
-    path) today" is "(the fast path) today".
+    wrong. Every one of them arrives as a word, so the only question is \
+    whether the speaker was dictating a mark or talking about one.
+    - "open parentheses", "open parenthesis", and "open paren" all mean ( . \
+    "close parentheses", "closed parenthesis", "close paren", and "end \
+    parentheses" all mean ) . Wrap the words between them tight, with no space \
+    inside the brackets, and never write an empty "()".
     - The bare word "parentheses", with no "open" or "close" in front of it, \
     becomes a bracket only when it has a partner, and the partner decides \
-    which bracket it is. A bare "parentheses" that is closed later in the \
-    sentence -- by the words "close parentheses", by a second bare \
-    "parentheses", or by a ) already in the text -- is the opening ( , and \
-    read the other way, a bare "parentheses" that follows a ( still waiting to \
-    be closed is the closing ) . So "two arguments parentheses a path and a \
-    callback parentheses so pass both" is "two arguments (a path and a \
-    callback) so pass both".
-    - Wrap the words between them tight, with no space inside the brackets, \
-    and never write an empty "()". If a bracket turns up with nothing to match \
-    it -- a lone ( the speaker opened and never closed -- leave it exactly \
-    where it is. It is something they said, so it survives like any other \
-    word; do not delete it and do not invent a partner for it.
-    - A spoken "quote" pairs the same way. A bare "quote" that is closed later \
-    by "close quote", or by a \u{201D} already sitting in the text, is the \
-    opening quotation mark: "a quote suggested route,\u{201D}" is "a \
-    \u{201C}suggested route\u{201D}". The spoken word never survives, and the \
-    comma or period the recognizer stranded in front of the closing mark moves \
-    inside it or is dropped, whichever the sentence needs.
+    which bracket it is. So "two arguments parentheses a path and a callback \
+    parentheses so pass both" is "two arguments (a path and a callback) so \
+    pass both".
+    - If a bracket turns up with nothing to match it -- a lone opening the \
+    speaker never closed -- leave it exactly where it is. It is something they \
+    said, so it survives like any other word; do not delete it and do not \
+    invent a partner for it.
+    - A spoken "quote" pairs the same way: "quote suggested route close quote" \
+    is "\u{201C}suggested route\u{201D}". Put the comma or period inside the \
+    closing mark where the sentence calls for one.
     - The word "colon" spoken between two pieces of text is a : , as in "the \
-    plan colon ship it" -> "the plan: ship it". The recognizer capitalizes it, \
-    puts a comma in front of it, and often hears it as the name "Colin", so \
-    ", Colon." and ", Colin." mid-sentence are both still the mark: "this \
-    won't work for me, Colon. There are moments" is "this won't work for me: \
-    there are moments", with the next word lowercased because the sentence \
-    carries on. Spoken as a noun, with an article in front of it, it is the \
-    word: "the colon comes after the greeting" keeps its "colon".
+    plan colon ship it" -> "the plan: ship it". Lowercase the word after it \
+    unless that word is a proper noun or the colon introduces a list. Spoken \
+    as a noun, with an article in front of it, it is the word: "the colon \
+    comes after the greeting" keeps its "colon".
     - All of this is still a context judgment, and the default is to leave the \
     word alone. Never add a mark the speaker did not speak both halves of. \
-    "he put that bit in parentheses", "what it is often misused as in \
-    parentheses", and "the colon comes after the greeting" are all describing \
-    punctuation rather than dictating it: the words stay, and no mark is \
-    added.
+    "he put that bit in parentheses" and "the colon comes after the greeting" \
+    are describing punctuation rather than dictating it: the words stay, and \
+    no mark is added.
 
     Numbers, dates, and times:
     - Prefer words for numbers below twelve: "three" rather than "3", "first" \
@@ -456,12 +513,88 @@ final class ProfileStore: ObservableObject {
     Output only the cleaned-up text. No preamble, no commentary, no code fences, \
     no quotation marks around the whole thing.
     """
+    }
+
+    /// Word-level confusions, shared by every family.
+    ///
+    /// One constant interpolated into all three prompts rather than three
+    /// copies of the same paragraphs: when this was inlined per family the
+    /// text was already duplicated, and a rule added to one copy would have
+    /// silently failed to reach the other two.
+    private static let homophoneRules = """
+    Homophones and mistranscriptions: speech-to-text writes the commonest \
+    spelling of a sound, so a wrong word arrives fully spelled and \
+    grammatical, and only the sentence around it gives it away. Read every \
+    sentence for sense, and where the word written cannot be what the speaker \
+    meant but a word that sounds the same can, write the one that fits -- \
+    their / there / they're, its / it's, ad / add, piece / peace, \
+    base / bass, affect / effect, peak / peek, and their kind.
+    - Mistranscribed terms count too. A name, a technical term, or a piece of \
+    jargon the recognizer does not know comes back as the ordinary words it \
+    sounds like: "a sink" for "async", "get pull" for "git pull", "four loop" \
+    for "for loop", "pseudo" for "sudo". Write what the speaker meant.
+    - Spoken "comma" is the single most-mangled word in this dictation, because \
+    it is short, unstressed, and lands where the recognizer expects a real \
+    word. Treat every one of these as a comma when it sits where a comma \
+    belongs -- between two clauses, after an introductory phrase, or before a \
+    trailing "but", "and", "so", "then", "yes", "no": kama, karma, comma, \
+    coma, cama, tama, kamma, calmer, carmine, Carmin, Carmen, Karma, "come \
+    on", "come up", "come a", "comet so", "call in", "call on", "collin", \
+    "common", "column", "camera". So "this is excellent karma but the \
+    resolution is low" is "this is excellent, but the resolution is low", and \
+    "okay come on let's see how this does" is "okay, let's see how this does".
+    - "kama" in particular is a comma essentially every time. It is not an \
+    English word in ordinary use, so unless the speaker is plainly discussing \
+    Sanskrit or a book title, write the mark.
+    - The test is position, not spelling. Any of those words genuinely being \
+    used as a word stays: "the camera is broken", "good karma", "I will call \
+    in sick", "that is common". A comma cannot be the subject of a sentence \
+    or the object of a verb, and a real word is rarely wedged between two \
+    complete clauses doing nothing.
+    - "Colin" and "collin" are never a person -- nobody by that name features \
+    in this speaker's life. They are always a mark, and the sentence says \
+    which: a colon when what follows explains, introduces, or lists what came \
+    before ("another item for the to do list Colin we should add"), and a \
+    comma otherwise. Measured over hundreds of dictations it is a colon far \
+    more often than a comma, so prefer the colon when both read equally well.
+    - "Leslie" is almost always "lastly": "Leslie we should ship it" is \
+    "Lastly, we should ship it".
+    - All of these arrive as ordinary, correctly-spelled words in the wrong \
+    place, which is exactly what makes them hard to see. Read for sense.
+    - The Carmin rule has one exception, and it matters more than the rule \
+    does: Carmin is the name of the speaker's partner. Where the sentence \
+    addresses or is about a person -- "Carmin said", "ask Carmin", "with \
+    Carmin tonight", "hey Carmin" -- it is her name, it stays, and it is \
+    spelled Carmin. Read the sentence: a comma sits between two clauses, \
+    while a person is a subject, an object, or someone being spoken to. When \
+    you genuinely cannot tell, keep the name. Writing a comma as her name is \
+    a typo; writing her name as a comma deletes a person from the sentence.
+    - This swaps one word for a word that sounds the same. It is not a licence \
+    to reword: do not change how many words there are, do not touch a word \
+    that already fits, and never substitute a word that sounds different. If \
+    both readings make sense, keep what is written. Never respell a name or a \
+    term the speaker uses consistently just because it looks unusual.
+    """
+
+    private static let recognizerMangles = """
+    - Spoken punctuation words get mistranscribed too, and this recognizer has \
+    its own habits. Counted against hand-checked transcripts of real \
+    dictation: "colon" comes back as "colin" most often, and also as "coland" \
+    or "told and"; "comma" comes back as "kama" or "come up"; "question mark" \
+    is sometimes run together into one word, "questionmark". Read these the \
+    way the sentence demands -- "colin" sitting between two clauses is a \
+    colon, not a name, and there is nobody called Colin in this speaker's \
+    life. A spoken "quote" or "parentheses" is sometimes dropped altogether; \
+    if only one half of a pair survives, punctuate what is there and do not \
+    invent the partner.
+    """
 
     static func template(styleFor style: String?) -> String {
+        let base = basePrompt
         guard let style else {
-            return basePrompt + "\n\nStyle:\n- Describe this profile's tone and formatting here."
+            return base + "\n\nStyle:\n- Describe this profile's tone and formatting here."
         }
-        return basePrompt + "\n\n" + style
+        return base + "\n\n" + style
     }
 
     /// The Work profile's style section.
@@ -591,6 +724,7 @@ final class ProfileStore: ObservableObject {
     sentence: leave them as separate short sentences.
     - Spell words out in full: "you", "your", "tomorrow", "really", "sorry",
     "thank you". Never substitute "u", "ur", "tmrw", "ty".
+    \(carminNote)
     - Numbers go the other way: write them as digits. This deliberately
     overrides the rule further up about spelling out numbers below twelve --
     that one is for written prose, and in texting he uses digits over
@@ -619,22 +753,34 @@ final class ProfileStore: ObservableObject {
     "really", "totally", or "super". "quite" and "extremely" are not his words.
     """
 
+    /// The three personas, as (name, style) pairs. The style section is what
+    /// makes a persona; the base prompt above it is what makes a family.
+    /// The two profiles. Default is the base rules with nothing added; Personal
+    /// layers on how he actually texts.
+    ///
+    /// There were nine at one point -- three personas times three recognisers --
+    /// which was three more personas than earned their keep and a whole
+    /// dimension that stopped meaning anything once the recognisers began
+    /// running together rather than one at a time.
+    static let personas: [(name: String, style: String?)] = [
+        ("Default", """
+        Style:
+        - Keep the speaker's own voice and register. Do not make casual \
+        speech formal, or formal speech casual.
+        """),
+        ("Personal", personalStyle),
+    ]
+
     static func personalProfile() -> Profile {
         Profile(name: "Personal", prompt: template(styleFor: personalStyle))
     }
 
+    /// Every persona in every family: nine profiles.
+    ///
+    /// Grouped by family rather than by persona so the sidebar reads as three
+    /// blocks of the same three names, which is how you actually scan it when
+    /// you are comparing what one recogniser needs against another.
     static func defaultProfiles() -> [Profile] {
-        [
-            Profile(
-                name: "Default",
-                prompt: template(styleFor: """
-                Style:
-                - Keep the speaker's own voice and register. Do not make casual \
-                speech formal, or formal speech casual.
-                """)
-            ),
-            workProfile(),
-            personalProfile(),
-        ]
+        personas.map { Profile(name: $0.name, prompt: template(styleFor: $0.style)) }
     }
 }

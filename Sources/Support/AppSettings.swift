@@ -30,6 +30,9 @@ final class AppSettings: ObservableObject {
         static let audioMaxMegabytes = "audioMaxMegabytes"
         static let audioEvictionPolicy = "audioEvictionPolicy"
         static let recognizer = "recognizer"
+        static let normalizeInput = "normalizeInput"
+        static let recognizerServerPort = "recognizerServerPort"
+        static let crossCheck = "crossCheckRecognizers"
         static let fastRecognition = "fastRecognition"
         static let bedrockModelID = "bedrockModelID"
         static let bedrockRegion = "bedrockRegion"
@@ -190,6 +193,35 @@ final class AppSettings: ObservableObject {
     }
 
     /// Which speech module transcribes. See `RecognizerChoice`.
+    /// Port the recogniser sidecar listens on. Settable for the same reason
+    /// `localPort` is: someone already running something there should not have
+    /// to guess why dictation stopped working.
+    @Published var recognizerServerPort: Int {
+        didSet { defaults.set(recognizerServerPort, forKey: Key.recognizerServerPort) }
+    }
+
+    /// Whether the other recognisers run alongside the chosen one, purely so
+    /// the rewrite model can see where they disagree.
+    ///
+    /// Costs memory rather than time: the models decode far faster than real
+    /// time, but keeping all of them resident is about 5.6 GB. Off would be
+    /// the safe default on a smaller machine; on by request here.
+    @Published var crossCheckRecognizers: Bool {
+        didSet { defaults.set(crossCheckRecognizers, forKey: Key.crossCheck) }
+    }
+
+    /// Whether `TranscriptNormalizer` runs before the model sees the text.
+    ///
+    /// Off by default, deliberately. The normaliser is a pure optimisation:
+    /// every rewrite prompt is written to handle raw recogniser output, so
+    /// turning it off can only give the model more work, never break it. The
+    /// question of whether code should be doing any of that work at all is
+    /// worth answering by measurement rather than taste -- run
+    /// `Evals/score.py` with it both ways.
+    @Published var normalizeInput: Bool {
+        didSet { defaults.set(normalizeInput, forKey: Key.normalizeInput) }
+    }
+
     @Published var recognizer: RecognizerChoice {
         didSet { defaults.set(recognizer.rawValue, forKey: Key.recognizer) }
     }
@@ -232,11 +264,15 @@ final class AppSettings: ObservableObject {
     var dictionaryTerms: [String] {
         var seen = Set<String>()
         let personal = parsedPersonalTerms(seen: &seen)
-        guard includeTechVocabulary else { return personal }
+        // Spoken punctuation is biased for unconditionally. The technical pack
+        // is a preference; the dictation command set is what the input path is
+        // built on, so it is not the user's to switch off by accident.
+        let punctuation = SpokenPunctuation.terms.filter { seen.insert($0.lowercased()).inserted }
+        guard includeTechVocabulary else { return personal + punctuation }
         // Personal entries first: they are added last-in-wins by the user and
         // should win any collision with the built-in pack.
         let tech = TechVocabulary.terms.filter { seen.insert($0.lowercased()).inserted }
-        return personal + tech
+        return personal + punctuation + tech
     }
 
     private func parsedPersonalTerms(seen: inout Set<String>) -> [String] {
@@ -335,6 +371,9 @@ final class AppSettings: ObservableObject {
             Key.audioMaxMegabytes: 5120,
             Key.audioEvictionPolicy: AudioEvictionPolicy.timeDiverse.rawValue,
             Key.recognizer: RecognizerChoice.punctuated.rawValue,
+            Key.normalizeInput: false,
+            Key.recognizerServerPort: 8765,
+            Key.crossCheck: true,
             Key.fastRecognition: true,
             // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
             // only Claude on Bedrock that ignores `cache_control`. With the ~1,750
@@ -387,6 +426,9 @@ final class AppSettings: ObservableObject {
             rawValue: defaults.string(forKey: Key.audioEvictionPolicy) ?? ""
         ) ?? .timeDiverse
         fastRecognition = defaults.bool(forKey: Key.fastRecognition)
+        normalizeInput = defaults.bool(forKey: Key.normalizeInput)
+        recognizerServerPort = defaults.integer(forKey: Key.recognizerServerPort)
+        crossCheckRecognizers = defaults.bool(forKey: Key.crossCheck)
         recognizer = RecognizerChoice(
             rawValue: defaults.string(forKey: Key.recognizer) ?? ""
         ) ?? .punctuated

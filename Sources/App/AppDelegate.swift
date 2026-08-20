@@ -354,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             defer: false
         )
         window.title = "ASRs-R-US Settings"
-        window.contentView = NSHostingView(rootView: SettingsView(server: session.server))
+        window.contentView = NSHostingView(rootView: SettingsView(server: session.server, recognizerServer: session.recognizerServer))
         window.center()
         window.isReleasedWhenClosed = false
         settingsWindow = window

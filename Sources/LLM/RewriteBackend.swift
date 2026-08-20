@@ -36,6 +36,26 @@ enum RewriteBackendKind: String, CaseIterable, Identifiable, Codable {
         case .anthropic:         return 600
         }
     }
+
+    /// Shortest gap allowed between two billed rewrites.
+    ///
+    /// The debounce above assumes updates arrive faster than it -- true of
+    /// Apple's recogniser, and false of the sidecar ones, which emit only
+    /// every one to two seconds and so sail through any debounce worth
+    /// having. Measured update rates are in `RecognizerChoice`. Without a
+    /// floor here, a minute of speech through NeMo is about 29 hosted
+    /// requests; with it, at most 40 and in practice far fewer, since the
+    /// throttle also lets several updates collapse into the newest one.
+    ///
+    /// Zero for anything running on this Mac: there is nothing to protect.
+    var minimumRewriteIntervalMilliseconds: Int {
+        switch self {
+        case .local:             return 0
+        case .appleIntelligence: return 0
+        case .bedrock:           return 1500
+        case .anthropic:         return 1500
+        }
+    }
 }
 
 /// Minimal surface the rewriter needs. Both backends stream text so the

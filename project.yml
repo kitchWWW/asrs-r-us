@@ -24,9 +24,17 @@ targets:
     platform: macOS
     sources:
       - path: Sources
-    resources:
+      # XcodeGen has no target-level `resources:` key -- a block by that name is
+      # silently ignored, which is why the asset catalogue below had never
+      # actually been bundled. Resources belong in `sources` with an explicit
+      # build phase.
       - path: Resources/Assets.xcassets
+        buildPhase: resources
         optional: true
+      # The sidecar recogniser server. Bundled so a copied-out .app can run it;
+      # RecognizerServerManager falls back to the source tree otherwise.
+      - path: Sidecar/asr_server.py
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:

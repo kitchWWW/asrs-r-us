@@ -16,3 +16,16 @@ Evals/__pycache__/
 
 # Scheduler lock, per-machine.
 .claude/scheduled_tasks.lock
+
+# Verbatim-recogniser bench. The harness is committed; nothing it consumes or
+# produces is, because all of it is Brian's speech or derived from it -- the
+# same reason the gold set and the session log are not in the repo.
+#
+# Listed as "everything under Evals/verbatim, then un-ignore the scripts",
+# rather than naming each output. Naming them meant every new kind of output
+# had to be remembered, and opus/ and whisper-out/ were not -- they reached the
+# staging area on the first commit that included this directory.
+Evals/verbatim/*
+!Evals/verbatim/*.py
+!Evals/verbatim/*.tpl.html
+!Evals/verbatim/README.md

@@ -52,7 +52,13 @@ final class RewriteService: ObservableObject {
 
     private var debounceTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
+    /// What the other recognisers heard, supplied by the session so this
+    /// service does not need to know the dictation engine exists.
+    var alternateTranscripts: () -> [(name: String, text: String)] = { [] }
+
     private var lastRequestedTranscript = ""
+    /// When the last billed rewrite went out, for the minimum-interval floor.
+    private var lastRequestStartedAt: Date?
 
     /// One provider per credential source, kept so the credential cache
     /// survives between rewrites -- otherwise every rewrite would shell out to
@@ -126,12 +132,24 @@ final class RewriteService: ObservableObject {
 
     /// Called on every ASR update.
     ///
-    /// The debounce exists to stop a request going out per syllable while the
-    /// recognizer is still revising its guess. Once a result comes back final,
-    /// there is nothing left to wait for -- those words are settled, and
-    /// holding them for another half second only adds latency to a rewrite
-    /// that was going to happen anyway. So finals fire immediately and only
-    /// volatile updates are debounced.
+    /// Two separate protections, because they solve different problems and
+    /// only one of them was ever doing much:
+    ///
+    /// The **debounce** stops a request going out per syllable while the
+    /// recognizer is still revising its guess. A final normally skips it --
+    /// settled words are not speculative, and holding them adds latency to a
+    /// rewrite that was going to happen anyway. That reasoning depends on the
+    /// recogniser actually revising, which is why it is asked: the NeMo
+    /// transducer only ever appends, so every one of its updates is already
+    /// settled and letting "finals" bypass the wait would just bill more.
+    ///
+    /// The **minimum interval** is the real ceiling on spend, and exists
+    /// because the debounce turns out to be nearly inert for the sidecar
+    /// recognisers. They emit an update every one to two seconds, so almost
+    /// every update outlives any debounce worth having and becomes a request.
+    /// Only a floor on the gap between billed requests bounds that. It delays
+    /// rather than drops: the newest text still gets rewritten, just no sooner
+    /// than the engine allows.
     ///
     /// Either way the request is skipped when the text is unchanged from the
     /// one already sent, so a final that merely confirms the volatile tail
@@ -144,16 +162,39 @@ final class RewriteService: ObservableObject {
 
         debounceTask?.cancel()
 
-        if isFinal {
+        let recognizer = settings.recognizer
+        let treatAsFinal = isFinal && recognizer.revisesText
+
+        let debounce = treatAsFinal
+            ? 0
+            : max(120, max(settings.debounceMilliseconds, recognizer.debounceFloorMilliseconds))
+        let delay = UInt64(debounce + throttleMilliseconds()) * 1_000_000
+
+        guard delay > 0 else {
             Task { [weak self] in await self?.rewrite(transcript: trimmed) }
             return
         }
-        let delay = UInt64(max(120, settings.debounceMilliseconds)) * 1_000_000
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }
-            await self?.rewrite(transcript: trimmed)
+            // Send the newest text, not the text that started this timer: more
+            // may have arrived while it ran, and rewriting the stale version
+            // would spend a request on something already superseded.
+            guard let self else { return }
+            let latest = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !latest.isEmpty, latest != self.lastRequestedTranscript else { return }
+            await self.rewrite(transcript: latest)
         }
+    }
+
+    /// How much longer this request has to wait to respect the engine's
+    /// minimum gap between billed rewrites. Zero when the engine is free or
+    /// enough time has already passed.
+    private func throttleMilliseconds() -> Int {
+        let minimum = settings.backend.minimumRewriteIntervalMilliseconds
+        guard minimum > 0, let last = lastRequestStartedAt else { return 0 }
+        let elapsed = Int(Date().timeIntervalSince(last) * 1000)
+        return max(0, minimum - elapsed)
     }
 
     /// Forces an immediate rewrite, ignoring the debounce (used when recording
@@ -199,6 +240,7 @@ final class RewriteService: ObservableObject {
         // Supersede any rewrite still in flight: its transcript is now stale.
         streamTask?.cancel()
         lastRequestedTranscript = transcript
+        lastRequestStartedAt = Date()
         status = .rewriting
 
         // Appended rather than prepended: the base prompt defines the task and
@@ -271,7 +313,9 @@ final class RewriteService: ObservableObject {
 
     private func buildUserMessage(transcript: String) -> String {
         // Collapse repeated spoken punctuation before the model sees it.
-        let cleaned = TranscriptNormalizer.normalize(transcript)
+        let cleaned = settings.normalizeInput
+            ? TranscriptNormalizer.normalize(transcript)
+            : transcript
 
         var parts: [String] = []
         parts.append("""
@@ -280,6 +324,49 @@ final class RewriteService: ObservableObject {
         \(cleaned)
         </transcript>
         """)
+
+        // Other recognisers' readings of the same audio, when cross-checking is
+        // on. Placed after the transcript and clearly subordinate to it: these
+        // are evidence about individual words, not competing drafts.
+        let alternates = alternateTranscripts()
+        if !alternates.isEmpty {
+            log.info("""
+                cross-checking against \(alternates.count, privacy: .public) other \
+                recogniser(s): \(alternates.map(\.name).joined(separator: ", "), privacy: .public)
+                """)
+            let listed = alternates
+                .map { "<\($0.name)>\n\($0.text)\n</\($0.name)>" }
+                .joined(separator: "\n")
+            parts.append("""
+            The same audio, as heard by a different speech recogniser:
+            \(listed)
+
+            This is not a second draft to choose between, and not a vote. It is \
+            evidence about individual words, from a model that mishears \
+            different things than the one above, so the two disagreeing tells \
+            you where to look.
+
+            How to use it:
+            - Where both readings say the same word, there is nothing to decide.
+            - Where they differ, ask which one the sentence can actually \
+            support, and write that. This is how "comma" against "karma" \
+            against "carmin" gets settled: one recogniser reaches for a real \
+            word, the other for a different real word, and only the sentence \
+            says which sound was meant.
+            - When neither reading makes sense, the speaker probably said \
+            something neither model caught. Prefer the main transcript and \
+            leave it alone rather than inventing a third option.
+            - Take single words, never structure. Do not adopt the other \
+            transcript's phrasing, word order, sentence breaks, or any content \
+            that appears only there. The main transcript remains the record of \
+            what was said and in what order.
+            - Ignore its punctuation and capitalisation completely. That \
+            recogniser adds marks at pauses rather than at grammar and converts \
+            spoken punctuation words into symbols, so its formatting is noise \
+            here even when its words are right. Punctuate from the rules above, \
+            not from what it did.
+            """)
+        }
 
         if let editContext = editTracker.promptContext {
             parts.append(editContext)
