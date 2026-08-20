@@ -29,11 +29,7 @@ final class AppSettings: ObservableObject {
         static let audioRetentionDays = "audioRetentionDays"
         static let audioMaxMegabytes = "audioMaxMegabytes"
         static let audioEvictionPolicy = "audioEvictionPolicy"
-        static let recognizer = "recognizer"
-        static let normalizeInput = "normalizeInput"
         static let recognizerServerPort = "recognizerServerPort"
-        static let crossCheck = "crossCheckRecognizers"
-        static let fastRecognition = "fastRecognition"
         static let bedrockModelID = "bedrockModelID"
         static let bedrockRegion = "bedrockRegion"
         static let awsProfile = "awsProfile"
@@ -200,39 +196,6 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(recognizerServerPort, forKey: Key.recognizerServerPort) }
     }
 
-    /// Whether the other recognisers run alongside the chosen one, purely so
-    /// the rewrite model can see where they disagree.
-    ///
-    /// Costs memory rather than time: the models decode far faster than real
-    /// time, but keeping all of them resident is about 5.6 GB. Off would be
-    /// the safe default on a smaller machine; on by request here.
-    @Published var crossCheckRecognizers: Bool {
-        didSet { defaults.set(crossCheckRecognizers, forKey: Key.crossCheck) }
-    }
-
-    /// Whether `TranscriptNormalizer` runs before the model sees the text.
-    ///
-    /// Off by default, deliberately. The normaliser is a pure optimisation:
-    /// every rewrite prompt is written to handle raw recogniser output, so
-    /// turning it off can only give the model more work, never break it. The
-    /// question of whether code should be doing any of that work at all is
-    /// worth answering by measurement rather than taste -- run
-    /// `Evals/score.py` with it both ways.
-    @Published var normalizeInput: Bool {
-        didSet { defaults.set(normalizeInput, forKey: Key.normalizeInput) }
-    }
-
-    @Published var recognizer: RecognizerChoice {
-        didSet { defaults.set(recognizer.rawValue, forKey: Key.recognizer) }
-    }
-
-    /// Asks the recogniser to commit to text sooner. It is the difference
-    /// between watching words appear as you speak and waiting for the phrase
-    /// to settle, and it costs a little accuracy for the speed.
-    @Published var fastRecognition: Bool {
-        didSet { defaults.set(fastRecognition, forKey: Key.fastRecognition) }
-    }
-
     /// How long recordings are kept. Zero means forever.
     @Published var audioRetentionDays: Int {
         didSet { defaults.set(audioRetentionDays, forKey: Key.audioRetentionDays) }
@@ -370,11 +333,7 @@ final class AppSettings: ObservableObject {
             Key.audioRetentionDays: 0,
             Key.audioMaxMegabytes: 5120,
             Key.audioEvictionPolicy: AudioEvictionPolicy.timeDiverse.rawValue,
-            Key.recognizer: RecognizerChoice.punctuated.rawValue,
-            Key.normalizeInput: false,
             Key.recognizerServerPort: 8765,
-            Key.crossCheck: true,
-            Key.fastRecognition: true,
             // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
             // only Claude on Bedrock that ignores `cache_control`. With the ~1,750
             // token preamble cached, Sonnet 5 costs about 40% less per month than
@@ -425,13 +384,7 @@ final class AppSettings: ObservableObject {
         audioEvictionPolicy = AudioEvictionPolicy(
             rawValue: defaults.string(forKey: Key.audioEvictionPolicy) ?? ""
         ) ?? .timeDiverse
-        fastRecognition = defaults.bool(forKey: Key.fastRecognition)
-        normalizeInput = defaults.bool(forKey: Key.normalizeInput)
         recognizerServerPort = defaults.integer(forKey: Key.recognizerServerPort)
-        crossCheckRecognizers = defaults.bool(forKey: Key.crossCheck)
-        recognizer = RecognizerChoice(
-            rawValue: defaults.string(forKey: Key.recognizer) ?? ""
-        ) ?? .punctuated
         bedrockModelID = defaults.string(forKey: Key.bedrockModelID)
             ?? "us.anthropic.claude-sonnet-5"
         bedrockRegion = defaults.string(forKey: Key.bedrockRegion) ?? "us-east-1"

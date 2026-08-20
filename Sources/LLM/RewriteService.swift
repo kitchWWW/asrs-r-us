@@ -162,7 +162,7 @@ final class RewriteService: ObservableObject {
 
         debounceTask?.cancel()
 
-        let recognizer = settings.recognizer
+        let recognizer = RecognizerChoice.record
         let treatAsFinal = isFinal && recognizer.revisesText
 
         let debounce = treatAsFinal
@@ -313,9 +313,7 @@ final class RewriteService: ObservableObject {
 
     private func buildUserMessage(transcript: String) -> String {
         // Collapse repeated spoken punctuation before the model sees it.
-        let cleaned = settings.normalizeInput
-            ? TranscriptNormalizer.normalize(transcript)
-            : transcript
+        let cleaned = transcript
 
         var parts: [String] = []
         parts.append("""

@@ -52,7 +52,7 @@ final class FanOutRecognizerBackend: RecognizerBackend {
                 try await backend.prepare()
             } catch {
                 log.error("""
-                    \(choice.displayName, privacy: .public) is not available and will \
+                    \(choice.shortName, privacy: .public) is not available and will \
                     not contribute: \(error.localizedDescription, privacy: .public)
                     """)
             }
@@ -75,7 +75,7 @@ final class FanOutRecognizerBackend: RecognizerBackend {
                 }
             } catch {
                 log.error("""
-                    \(choice.displayName, privacy: .public) failed to start: \
+                    \(choice.shortName, privacy: .public) failed to start: \
                     \(error.localizedDescription, privacy: .public)
                     """)
             }

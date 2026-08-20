@@ -61,12 +61,6 @@ final class SessionAudioRecorder: @unchecked Sendable {
         }
     }
 
-    var recordedSeconds: Double {
-        queue.sync {
-            guard let file, frames > 0 else { return 0 }
-            return Double(frames) / file.fileFormat.sampleRate
-        }
-    }
 
     // MARK: - Writing
 
@@ -194,37 +188,6 @@ enum SessionAudio {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }()
-
-    /// Moves a recording into the protected set. Returns where it ended up, or
-    /// nil if there was nothing by that name to move.
-    @discardableResult
-    nonisolated static func promote(stem: String) -> URL? {
-        guard let source = url(named: stem) else { return nil }
-        guard source.deletingLastPathComponent() != annotatedDirectory else { return source }
-        let destination = annotatedDirectory.appendingPathComponent(source.lastPathComponent)
-        try? FileManager.default.removeItem(at: destination)
-        do {
-            try FileManager.default.moveItem(at: source, to: destination)
-            return destination
-        } catch {
-            return nil
-        }
-    }
-
-    /// Returns a promoted recording to the ordinary corpus, where it is once
-    /// again subject to the ceiling.
-    @discardableResult
-    nonisolated static func demote(stem: String) -> URL? {
-        let candidates = (try? FileManager.default.contentsOfDirectory(atPath: annotatedDirectory.path)) ?? []
-        guard let name = candidates.first(where: { ($0 as NSString).deletingPathExtension == stem }) else {
-            return nil
-        }
-        let source = annotatedDirectory.appendingPathComponent(name)
-        let destination = directory.appendingPathComponent(name)
-        try? FileManager.default.removeItem(at: destination)
-        try? FileManager.default.moveItem(at: source, to: destination)
-        return destination
-    }
 
     nonisolated static var annotatedCount: Int {
         ((try? FileManager.default.contentsOfDirectory(atPath: annotatedDirectory.path)) ?? []).count

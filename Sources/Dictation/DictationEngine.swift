@@ -193,32 +193,23 @@ final class DictationEngine: ObservableObject {
     // MARK: - Pipeline
 
     private func configurePipeline() async throws {
-        let choice = AppSettings.shared.recognizer
-        activeRecognizer = choice
-
-        // One place decides which recogniser runs; everything downstream of
-        // here is the same for all of them.
+        // Both recognisers, every session. There is no setting: the pair was
+        // chosen by measurement and there is nothing left to pick between.
+        // Only the record's text reaches the panel; the cross-check's reaches
+        // the rewrite prompt as evidence about individual words.
         func make(_ choice: RecognizerChoice) -> any RecognizerBackend {
             choice.isSidecar
                 ? SocketRecognizerBackend(choice: choice, manager: serverManager)
-                : AppleRecognizerBackend(choice: choice)
+                : AppleRecognizerBackend()
         }
 
-        let backend: any RecognizerBackend
-        if AppSettings.shared.crossCheckRecognizers {
-            // A fixed pair rides along, not "everything else" -- see
-            // `RecognizerChoice.crossCheckSet` for why two beats three.
-            let others = RecognizerChoice.crossCheckSet.filter { $0 != choice }
-            let fanOut = FanOutRecognizerBackend(
-                primary: make(choice),
-                secondaries: others.map { ($0, make($0)) }
-            )
-            alternateSource = fanOut
-            backend = fanOut
-        } else {
-            alternateSource = nil
-            backend = make(choice)
-        }
+        activeRecognizer = .record
+        let fanOut = FanOutRecognizerBackend(
+            primary: make(.record),
+            secondaries: [(.crossCheck, make(.crossCheck))]
+        )
+        alternateSource = fanOut
+        let backend: any RecognizerBackend = fanOut
         self.backend = backend
 
         try await backend.prepare()

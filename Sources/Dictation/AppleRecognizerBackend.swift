@@ -3,23 +3,19 @@ import Foundation
 import Speech
 import os
 
-/// macOS 26's own speech modules, behind `RecognizerBackend`.
+/// macOS 26's `SpeechTranscriber`, behind `RecognizerBackend`.
 ///
-/// This is the code that used to live inside `DictationEngine`, moved out
-/// unchanged in behaviour. Both Apple modules are handled here rather than
-/// split into two backends: they differ only in which object is constructed
-/// and which `results` sequence is read, and everything around that -- asset
-/// installation, the analyzer, contextual biasing, the input stream -- is
-/// identical.
+/// Runs as the cross-check rather than as the transcript: it punctuates and
+/// capitalises on its own, which is exactly what this app does not want from a
+/// recogniser, but it mishears different words than the transducer does and
+/// that disagreement is what settles them.
 @MainActor
 final class AppleRecognizerBackend: RecognizerBackend {
 
-    private let choice: RecognizerChoice
     private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "recognizer.apple")
 
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
-    private var dictationTranscriber: DictationTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
     private var task: Task<Void, Never>?
 
@@ -61,64 +57,28 @@ final class AppleRecognizerBackend: RecognizerBackend {
         resampler.prepare(from: format, to: target)
     }
 
-    init(choice: RecognizerChoice) {
-        self.choice = choice
-    }
-
     func prepare() async throws {
         guard SpeechTranscriber.isAvailable else { throw DictationEngine.DictationError.unavailable }
 
         let locale = await Self.resolveLocale()
-        let module: any SpeechModule
 
-        switch choice {
-        case .punctuated:
-            // `.progressiveTranscription` is `[.volatileResults, .fastResults]`.
-            // `fastResults` finalises sooner by committing sooner, which costs
-            // a little accuracy -- measured over 19 real recordings it kept 10
-            // spoken punctuation words where volatile alone kept 12, with the
-            // same mark density. That is a small price for text that appears
-            // while you are still talking, so it stays on by default and the
-            // setting exists for anyone who would rather wait and be right.
-            let t = SpeechTranscriber(
-                locale: locale,
-                transcriptionOptions: [],
-                reportingOptions: AppSettings.shared.fastRecognition
-                    ? [.volatileResults, .fastResults]
-                    : [.volatileResults],
-                attributeOptions: []
-            )
-            transcriber = t
-            module = t
-            try await ensureModelInstalled(module: t, locale: locale,
-                                           installed: await SpeechTranscriber.installedLocales)
-
-        case .raw:
-            // Every transcription option is opt-in on this module, so an empty
-            // set is the whole point: no inserted punctuation, no emoji
-            // substitution, no profanity masking.
-            var hints: Set<DictationTranscriber.ContentHint> = []
-            if let configuration = await CustomLanguageModel.configuration(
-                terms: AppSettings.shared.dictionaryTerms, locale: locale
-            ) {
-                hints.insert(.customizedLanguage(modelConfiguration: configuration))
-            }
-            let t = DictationTranscriber(
-                locale: locale,
-                contentHints: hints,
-                transcriptionOptions: [],
-                reportingOptions: [.volatileResults, .frequentFinalization],
-                attributeOptions: []
-            )
-            dictationTranscriber = t
-            module = t
-            try await ensureModelInstalled(module: t, locale: locale,
-                                           installed: await DictationTranscriber.installedLocales)
-
-        case .nemo, .vosk:
-            // Not this backend's business; the engine routes these elsewhere.
-            throw DictationEngine.DictationError.unavailable
-        }
+        // `.progressiveTranscription` is `[.volatileResults, .fastResults]`.
+        // `fastResults` finalises sooner by committing sooner, which costs a
+        // little accuracy -- measured over 19 real recordings it kept 10 spoken
+        // punctuation words where volatile alone kept 12, with the same mark
+        // density. It stays on: this recogniser is now the cross-check, and a
+        // reading that lags the transcript by the 2.0s volatile-only costs is
+        // a reading of different words than the ones being checked.
+        let transcriber = SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults, .fastResults],
+            attributeOptions: []
+        )
+        self.transcriber = transcriber
+        let module: any SpeechModule = transcriber
+        try await ensureModelInstalled(module: transcriber, locale: locale,
+                                       installed: await SpeechTranscriber.installedLocales)
 
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(
             compatibleWith: [module]
@@ -184,12 +144,6 @@ final class AppleRecognizerBackend: RecognizerBackend {
                             publish(String(result.text.characters), result.isFinal)
                         }
                     }
-                } else if let t = await self.dictationTranscriber {
-                    for try await result in t.results {
-                        await MainActor.run {
-                            publish(String(result.text.characters), result.isFinal)
-                        }
-                    }
                 }
             } catch {
                 await MainActor.run {
@@ -210,7 +164,6 @@ final class AppleRecognizerBackend: RecognizerBackend {
         task = nil
         analyzer = nil
         transcriber = nil
-        dictationTranscriber = nil
     }
 
     // MARK: - Assets

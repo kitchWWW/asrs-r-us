@@ -442,18 +442,6 @@ extension StatsStore {
 
     var sessionsToday: Int { stats.days[Self.dayKey(Date())] ?? 0 }
 
-    /// Days between the first session and now, so "per day" means per day of
-    /// ownership rather than per day of use.
-    var daysSinceFirstUse: Int {
-        guard let first = stats.firstSessionAt else { return 0 }
-        let days = Calendar.current.dateComponents([.day], from: first, to: Date()).day ?? 0
-        return max(1, days + 1)
-    }
-
-    var sessionsPerDay: Double {
-        guard stats.sessions > 0 else { return 0 }
-        return Double(stats.sessions) / Double(daysSinceFirstUse)
-    }
 
     /// Averaged over days it was actually used, which is the number that feels
     /// true when you have owned it for a year and used it in bursts.
@@ -480,10 +468,6 @@ extension StatsStore {
         return Double(stats.sessionsEdited) / Double(stats.sessions)
     }
 
-    var editsPerEditedSession: Double {
-        guard stats.sessionsEdited > 0 else { return 0 }
-        return Double(stats.edits) / Double(stats.sessionsEdited)
-    }
 
     func outcomeCount(_ outcome: SessionLog.Outcome) -> Int {
         stats.outcomes[outcome.rawValue] ?? 0
@@ -600,9 +584,6 @@ extension StatsStore {
             }
     }
 
-    func profileShare() -> [(name: String, count: Int)] {
-        stats.profiles.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
-    }
 
     /// Median and p95 latency in milliseconds for one engine.
     func latency(for engine: String) -> (firstToken: Int?, median: Int?, p95: Int?, samples: Int)? {
@@ -632,8 +613,6 @@ extension StatsStore {
         let requests: Int
         let cost: Double?
         var id: String { model }
-
-        var totalTokens: Int { input + output + cacheWrite + cacheRead }
     }
 
     var spendByModel: [Spend] {

@@ -64,13 +64,4 @@ struct ModelPricing {
             + Double(usage.cacheReadTokens) / million * rates.cacheReadPerMTok
     }
 
-    /// How the rates are described in the UI, so the number is never presented
-    /// as an authoritative bill.
-    static func rateDescription(for modelID: String) -> String? {
-        guard let rates = forModel(modelID) else { return nil }
-        return String(
-            format: "$%.0f in / $%.0f out per million tokens",
-            rates.inputPerMTok, rates.outputPerMTok
-        )
-    }
 }

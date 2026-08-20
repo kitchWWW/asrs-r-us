@@ -4,10 +4,9 @@ import os
 
 /// A recogniser running in the sidecar, reached over a websocket.
 ///
-/// Both sidecar models share this: `asr_server.py` presents one protocol and
-/// adapts the engines behind it, so the difference between NeMo and Vosk lives
-/// in Python rather than here. What this class owns is the socket, the
-/// conversion to 16-bit PCM, and the back-pressure policy.
+/// `asr_server.py` presents one protocol and adapts the engine behind it, so
+/// what this class owns is the socket, the conversion to 16-bit PCM, and the
+/// back-pressure policy.
 ///
 /// The audio thread must never block, so `sink` does no I/O: it converts the
 /// buffer and hands the bytes to a lock-guarded queue that a separate task

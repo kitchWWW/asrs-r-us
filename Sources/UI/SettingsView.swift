@@ -53,7 +53,6 @@ struct SettingsView: View {
 
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject var server: LlamaServerManager
-    @ObservedObject var recognizerServer: RecognizerServerManager
     @State private var accessibilityGranted = HotKeyMonitor.hasAccessibilityPermission
     @State private var keyStatus: KeyStatus = .untested
     @State private var validationTask: Task<Void, Never>?
@@ -262,84 +261,6 @@ struct SettingsView: View {
                         .controlSize(.small)
                         .disabled(settings.hotKey == .f7)
                 }
-            }
-
-            Section("Recognizer") {
-                // A row per recogniser rather than a plain Picker: the choice
-                // turns on two measured numbers, and a menu that shows only
-                // names hides the entire basis for making it.
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(RecognizerChoice.primary) { choice in
-                        RecognizerRow(
-                            choice: choice,
-                            isSelected: settings.recognizer == choice,
-                            problem: recognizerServer.installationProblem(for: choice)
-                        ) { settings.recognizer = choice }
-                    }
-                    if settings.recognizer == .raw {
-                        Divider().padding(.vertical, 4)
-                        RecognizerRow(
-                            choice: .raw,
-                            isSelected: true,
-                            problem: nil
-                        ) { }
-                    }
-                }
-                Text(settings.recognizer.explanation)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let problem = recognizerServer.installationProblem(for: settings.recognizer) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text(problem)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else if settings.recognizer.isSidecar {
-                    HStack(spacing: 6) {
-                        switch recognizerServer.state {
-                        case .ready:
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            Text("Recogniser running").font(.caption)
-                        case .starting, .loadingModel:
-                            ProgressView().controlSize(.small)
-                            Text(recognizerServer.state == .loadingModel
-                                 ? "Loading the model…" : "Starting…").font(.caption)
-                        case .failed(let message):
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                            Text(message).font(.caption)
-                                .fixedSize(horizontal: false, vertical: true)
-                        case .stopped:
-                            Image(systemName: "circle").foregroundStyle(.secondary)
-                            Text("Starts with your next dictation").font(.caption)
-                        }
-                    }
-                }
-
-                if !settings.recognizer.isSidecar {
-                    Toggle("Show words as early as possible", isOn: $settings.fastRecognition)
-                    Text("Commits to text sooner so it appears while you are still speaking. "
-                         + "Turning it off makes the recogniser wait until a phrase settles, which "
-                         + "is slightly more accurate and noticeably less live.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Toggle("Tidy the transcript before the model sees it", isOn: $settings.normalizeInput)
-                Text("Resolves spoken punctuation in code — runs of \"period period\", bracket "
-                     + "and quote pairs, a spoken colon — before the rewrite. Off by default: "
-                     + "every prompt already describes this work, so leaving it off simply hands "
-                     + "the whole job to the model. Score it both ways with Evals/score.py.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("Takes effect on the next dictation.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
 
             Section("Permissions") {
@@ -783,53 +704,5 @@ struct DictionarySettingsView: View {
             }
         }
         .padding(14)
-    }
-}
-
-/// One selectable recogniser, with the measurement that justifies it.
-///
-/// A row rather than a menu item because the numbers are the point: two of
-/// these invent no punctuation and one invents 13.75 marks per 100 words, and
-/// that is the whole reason the setting exists. A row that needs a model
-/// downloaded says so in place rather than failing at the next press of F7.
-private struct RecognizerRow: View {
-    let choice: RecognizerChoice
-    let isSelected: Bool
-    let problem: String?
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: isSelected
-                      ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                    .imageScale(.medium)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(choice.shortName)
-                            .foregroundStyle(.primary)
-                        if problem != nil {
-                            Text("needs setup")
-                                .font(.caption2)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.orange.opacity(0.18), in: Capsule())
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    if let measurements = choice.measurements {
-                        Text(measurements)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 3)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }

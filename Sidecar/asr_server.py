@@ -2,18 +2,16 @@
 """Streaming speech recognition over a websocket, for recognisers that cannot
 run in-process.
 
-The app talks to exactly one protocol here, and this script adapts whichever
-engine is behind it. That is the whole reason it exists rather than the two
-projects' own servers: sherpa-onnx ships a C++ websocket server and Vosk ships
-a Python one, they speak different protocols, and neither reports results the
-way `DictationEngine` wants them. One adapter that both engines plug into keeps
-the Swift side honest -- it sees one recogniser interface, not two.
+The app talks to exactly one protocol here, and this script adapts the engine
+behind it. That is the whole reason it exists rather than sherpa-onnx's own
+C++ websocket server: that server speaks its own protocol and does not report
+results the way `DictationEngine` wants them.
 
-Several engines are loaded at once and chosen per connection, so the app can
-fan the same microphone out to all of them and hand every reading to the
-rewrite model. Independent recognisers make independent mistakes -- one hears
-"comma", another "karma", a third "colin" -- and three disagreeing transcripts
-tell the model far more than one confident wrong one.
+The engine table and the per-connection `engine` field are kept although there
+is currently one entry. The app fans the same microphone out to several
+recognisers and reconciles their disagreement, and the second one happens to be
+in-process today; adding another sidecar model should be a line of data here,
+not a rewrite of the handler.
 
 Protocol, from the client's side:
 
@@ -28,8 +26,7 @@ supervising Swift side can tell "still loading a 1.8 GB model" from "wedged"
 using the same health-poll it already uses for llama-server.
 
 Run:
-    asr_server.py --port 8765 \
-        --engine sherpa=<dir> --engine vosk=<dir>
+    asr_server.py --port 8765 --engine sherpa=<dir>
 """
 
 import argparse
@@ -101,54 +98,8 @@ class SherpaSession:
         return self.rec.get_result(self.stream), True
 
 
-class VoskModel:
-    """Vosk, which genuinely distinguishes partial from final.
+ENGINES = {"sherpa": SherpaModel}
 
-    Unlike the transducer above, Vosk does take text back -- 20 revisions over
-    the same 6.5 minutes -- so its finals mean something and are reported as
-    such. Word confidences ride along on finals; they are passed through for
-    whoever wants them and ignored by the app today.
-    """
-
-    revises = True
-
-    def __init__(self, model_dir):
-        from vosk import Model, KaldiRecognizer, SetLogLevel
-        SetLogLevel(-1)
-        self._model = Model(model_dir)
-        self._KaldiRecognizer = KaldiRecognizer
-
-    def session(self):
-        return VoskSession(self._KaldiRecognizer(self._model, 16000))
-
-
-class VoskSession:
-
-    def __init__(self, rec):
-        self.rec = rec
-        self.rec.SetWords(True)
-        self.settled = ""
-
-    def _join(self, tail):
-        return (self.settled + " " + tail).strip() if self.settled else tail
-
-    def feed(self, pcm16):
-        if self.rec.AcceptWaveform(pcm16.tobytes()):
-            piece = json.loads(self.rec.Result()).get("text", "")
-            if piece:
-                self.settled = self._join(piece)
-            return self.settled, True
-        tail = json.loads(self.rec.PartialResult()).get("partial", "")
-        return self._join(tail), False
-
-    def flush(self):
-        piece = json.loads(self.rec.FinalResult()).get("text", "")
-        if piece:
-            self.settled = self._join(piece)
-        return self.settled, True
-
-
-ENGINES = {"sherpa": SherpaModel, "vosk": VoskModel}
 
 
 async def serve(models, port):
@@ -229,7 +180,7 @@ async def serve(models, port):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", action="append", required=True, metavar="NAME=DIR",
-                    help="repeatable, e.g. --engine sherpa=/path --engine vosk=/path")
+                    help="repeatable, e.g. --engine sherpa=/path")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
 

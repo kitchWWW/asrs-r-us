@@ -30,11 +30,6 @@ final class ProfileStore: ObservableObject {
         static let selected = "selectedProfileID"
         /// Pre-profiles single prompt, migrated into the first profile.
         static let legacyPrompt = "systemPrompt"
-        static let prunedSeeds = "prunedSeedProfilesV2"
-        static let seededWorkPersonal = "seededWorkPersonalV1"
-        static let refreshedStyles = "refreshedSeedStylesV1"
-        static let seededFamilies = "seededRecognizerFamiliesV1"
-        static let suffixedSeeds = "suffixedSeedProfilesV1"
         static let carminNote = "personalCarminNoteV1"
         static let collapsedToTwo = "collapsedToTwoProfilesV1"
     }
@@ -92,18 +87,6 @@ final class ProfileStore: ObservableObject {
             resolved = stored
         }
         var prepared = Self.upgradingLegacyPrompts(in: resolved)
-        // Existing installs need these added explicitly: seeding only runs on a
-        // first launch with an empty store.
-        if !UserDefaults.standard.bool(forKey: Key.seededWorkPersonal) {
-            let existing = Set(prepared.map(\.name))
-            if !existing.contains("Work") { prepared.append(Self.workProfile()) }
-            if !existing.contains("Personal") { prepared.append(Self.personalProfile()) }
-            UserDefaults.standard.set(true, forKey: Key.seededWorkPersonal)
-        }
-        if !UserDefaults.standard.bool(forKey: Key.refreshedStyles) {
-            prepared = Self.refreshingSeedStyles(in: prepared)
-            UserDefaults.standard.set(true, forKey: Key.refreshedStyles)
-        }
         // The shared rules now read "Carmin" as a mistranscribed "comma", which
         // is right for dictated prose and wrong for messages to the person of
         // that name. Appended rather than pushed as a whole style section: a
@@ -215,11 +198,6 @@ final class ProfileStore: ObservableObject {
         )
     }
 
-    func resetToDefaults() {
-        profiles = Self.defaultProfiles()
-        selectedID = profiles[0].id
-    }
-
     private func uniqueName(from name: String) -> String {
         var candidate = name
         var suffix = 2
@@ -254,20 +232,6 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-    /// One-time replacement of the seeded profiles' style sections.
-    ///
-    /// `upgradingLegacyPrompts` deliberately preserves whatever style section a
-    /// stored profile carries -- that is what keeps a user's own wording safe
-    /// when the shared rules change underneath it. The cost is that editing
-    /// `workStyle` or `personalStyle` in code otherwise reaches new installs
-    /// only, and never the profiles already on disk.
-    ///
-    /// These two were rewritten from a study of how Brian actually writes, so
-    /// they are worth pushing to existing profiles once. Guarded by its own
-    /// defaults flag so it happens exactly once, and applied only to profiles
-    /// still named "Work" and "Personal". Brian confirmed neither style section
-    /// had been hand-edited before this ran; a later revision that cannot
-    /// assume that should compare against the previous text first.
     /// The Personal profile's override of the shared Carmin rule.
     ///
     /// Kept as its own constant because it is both seeded into new profiles as
@@ -284,17 +248,6 @@ final class ProfileStore: ObservableObject {
     Carmen or carmine.
     """
 
-    private static func refreshingSeedStyles(in profiles: [Profile]) -> [Profile] {
-        let replacements = ["Work": workStyle, "Personal": personalStyle]
-        return profiles.map { profile in
-            guard let style = replacements[profile.name],
-                  let marker = profile.prompt.range(of: baseTailMarker) else { return profile }
-            var updated = profile
-            updated.prompt = String(profile.prompt[..<marker.upperBound]) + "\n\n" + style
-            return updated
-        }
-    }
-
     // MARK: - Prompt templates
 
     /// The last line of every base prompt, whichever family it belongs to.
@@ -305,26 +258,6 @@ final class ProfileStore: ObservableObject {
     /// families end on it, which is what lets one marker serve them all.
     private static let baseTailMarker = "no quotation marks around the whole thing."
 
-    /// The rewriting rules every profile starts from, in the shape the active
-    /// recogniser's output actually needs.
-    ///
-    /// Deliberately preservation-first. An earlier version led with its removal
-    /// rules, and small local models over-applied them -- dropping whole
-    /// clauses and hedges, which made the rewrite unusable and sent the user
-    /// back to copying the raw transcript. Deleting is now tightly scoped and
-    /// the length check gives the model a concrete way to catch itself.
-    ///
-    /// Three variants exist because the recognisers hand over genuinely
-    /// different text, not because the personas differ. Apple's modules
-    /// punctuate and capitalise on their own, so much of that variant is about
-    /// *undoing* marks nobody asked for. The sidecar models emit bare lowercase
-    /// words with no punctuation and no digits at all, so there is nothing to
-    /// undo and everything to add -- and each mangles the spoken punctuation
-    /// words differently, which is measured and named in its own variant.
-    ///
-    /// Every variant assumes nothing was pre-processed. That is what makes
-    /// `AppSettings.normalizeInput` safe to switch off: the normaliser only
-    /// ever removes work these prompts already describe.
     /// The rewriting rules every profile starts from.
     ///
     /// One prompt, not one per recogniser. There used to be three, chosen by
@@ -340,12 +273,11 @@ final class ProfileStore: ObservableObject {
     /// back to copying the raw transcript. Deleting is now tightly scoped and
     /// the length check gives the model a concrete way to catch itself.
     ///
-    /// It assumes nothing was pre-processed, which is what makes
-    /// `AppSettings.normalizeInput` safe to switch off: the normaliser only
-    /// ever removes work this prompt already describes.
-    static let basePrompt = barePrompt(mangles: recognizerMangles)
+    /// It assumes nothing pre-processes the transcript, because nothing does:
+    /// what the recogniser produced is what the model is shown.
+    static let basePrompt = composed(mangles: recognizerMangles)
 
-    private static func barePrompt(mangles: String) -> String {
+    private static func composed(mangles: String) -> String {
         """
     You clean up raw voice-dictation transcripts. This is a transcription \
     clean-up task, not an editing, summarizing, or rewriting-for-brevity task.
@@ -597,87 +529,6 @@ final class ProfileStore: ObservableObject {
         return base + "\n\n" + style
     }
 
-    /// The Work profile's style section.
-    ///
-    /// Measured, like `personalStyle`: from 173 of his own sent emails,
-    /// 15,688 words, with quoted reply text and his signature block stripped
-    /// so only prose he wrote was counted.
-    ///
-    /// Two rules here are framed against the grain of what the measurement
-    /// literally showed. He opens with a greeting in 66% of emails and signs
-    /// off in 89%, but this prompt rewrites dictation and the base rules forbid
-    /// inventing a greeting or sign-off the speaker did not say -- so these
-    /// describe the *form* to use when he dictates one, not an instruction to
-    /// supply one. Same reasoning retires the "add a TLDR line" finding
-    /// outright: a summary is new content, and the base prompt's one hard rule
-    /// is that nothing is summarized.
-    ///
-    /// One rule overrides the base deliberately, and says so in the text: the
-    /// base renders a spoken dash as "--", while em and en dashes appear zero
-    /// times in his email and he uses a spaced hyphen instead. The base rule
-    /// about spelling out numbers below twelve is left alone here -- Brian
-    /// meant that one for exactly this kind of writing.
-    static let workStyle = """
-    Style:
-    - This is professional writing: email, Slack to colleagues, tickets, docs.
-    It is dictated speech being written down, so every rule below describes how
-    the finished message should read -- never a licence to add anything he did
-    not say.
-    - Stay short. His median sent email is 43 words and two sentences, and half
-    are 40 words or fewer. Tighten the disfluencies out of dictation, but do not
-    expand it, and never add closing pleasantries that were not spoken.
-    - When he opens with a greeting, put it on its own line with a blank line
-    after it, and end it with an exclamation mark rather than a comma: "Hi!",
-    "Hello!", "Hi Sarah!". 87% of his greetings end in "!" and 11% in a comma,
-    and 55% carry no name at all. Do not add a greeting he did not dictate.
-    - When he signs off, the sign-off is "Thanks," on its own line with "Brian"
-    on the next. "Thanks," is 63% of his closings and the thanks family covers
-    86%. He never writes "Best,", "Regards,", "Cheers,", or "Kind regards," --
-    zero occurrences in 173 emails. He signs "Brian", not "Brian Ellis", unless
-    he is introducing himself to a stranger or an organization. Do not add a
-    sign-off he did not dictate.
-    - Break the body into short paragraphs of one idea each, separated by blank
-    lines. His median is two paragraphs of about 23 words, and a
-    single-sentence paragraph is normal.
-    - Vary sentence length rather than evening it out. His median sentence is 16
-    words, but 28% run to eight or fewer and 12% past forty. Keep a short
-    reaction short, and let an explanatory sentence run long on commas instead
-    of being chopped into uniform pieces.
-    - Keep exclamation marks. 91% of his emails contain at least one, averaging
-    1.5. Do not downgrade a spoken enthusiastic tone to a full stop.
-    - Use a spaced hyphen " - " for a dash or an aside. This overrides the base
-    rule that renders a spoken dash as "--": em and en dashes appear zero times
-    in 15,700 words of his email. Semicolons are rare, in 5% of emails; prefer a
-    period or the spaced hyphen.
-    - Keep parenthetical asides in parentheses; 35% of his emails have one. A
-    caveat, self-correction, or joke trailing off the end of a sentence belongs
-    in brackets rather than promoted to a sentence of its own.
-    - Use "-" for bullets, never "*" and never numbers, and only where he
-    actually enumerated something. Bullets appear in 13% of his emails and
-    numbered lists in 1%. One item per line.
-    - Contract negations: "don't", "didn't", "doesn't", "won't". 83% of his are
-    contracted; do not formalize them back to "do not".
-    - Keep hedges and intensifiers exactly as spoken -- "I think", "might",
-    "maybe", "kind of", "really", "totally", "super". Do not harden a hedged
-    statement into a flat assertion.
-    - Keep requests soft. He writes "let me know", "would love to", "happy to",
-    "if you could". "can you" and "could you" appear in 2-3% of his emails and
-    "would you mind" never. Keep "please" where he said it.
-    - Keep "y'all" as the second-person plural. It appears in 19% of his email,
-    including to clients. Never standardize it to "you all", "everyone", or
-    "the team".
-    - Keep ":)" if he dictates one -- 20% of his professional emails carry one
-    -- and never add one yourself. He does not use emoji.
-    - Never introduce corporate filler he does not use: "Circling back", "Per my
-    last email", "Just following up on the below", "I hope this email finds you
-    well", "Please don't hesitate to reach out". Mark emphasis with *asterisks*
-    rather than capitals.
-    """
-
-    static func workProfile() -> Profile {
-        Profile(name: "Work", prompt: template(styleFor: workStyle))
-    }
-
     /// The Personal profile's style section.
     ///
     /// Measured rather than guessed: derived from 9,138 messages Brian sent
@@ -701,7 +552,7 @@ final class ProfileStore: ObservableObject {
     /// Brian does not capitalize a message himself, so a
     /// statistic that measures the keyboard is not evidence about him. Prefer
     /// his account of his own habits over the corpus wherever the corpus is
-    /// really describing autocorrect. See `workStyle` for why this is a
+    /// really describing autocorrect. See the note above for why this is a
     /// constant.
     static let personalStyle = """
     Style:
@@ -770,10 +621,6 @@ final class ProfileStore: ObservableObject {
         """),
         ("Personal", personalStyle),
     ]
-
-    static func personalProfile() -> Profile {
-        Profile(name: "Personal", prompt: template(styleFor: personalStyle))
-    }
 
     /// Every persona in every family: nine profiles.
     ///

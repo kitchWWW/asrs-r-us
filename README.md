@@ -19,6 +19,8 @@ around one hard rule: **keep everything the speaker actually said.**
 - **macOS 26+** — uses the `SpeechAnalyzer` / `SpeechTranscriber` API
 - **Xcode 26+** to build
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
+- [uv](https://docs.astral.sh/uv/) — `brew install uv`, for the recogniser
+  sidecar
 
 Then whichever rewrite engine you want (see [Engines](#engines)); the default
 is the local model, which needs `brew install llama.cpp` and nothing else.
@@ -30,6 +32,7 @@ There is no signed release build yet, so install from source:
 ```sh
 git clone https://github.com/kitchWWW/asrs-r-us.git
 cd asrs-r-us
+make asr-setup    # recogniser environment + model, ~460 MB, once
 make run          # regenerate project, build, launch
 ```
 
@@ -40,6 +43,7 @@ make build        # build only
 make project      # regenerate the .xcodeproj from project.yml
 make path         # print the built .app path
 make stop         # quit a running copy
+make asr-setup    # install/refresh the recogniser sidecar and its model
 ```
 
 The Xcode project is **generated** from `project.yml` by XcodeGen. Edit
@@ -61,13 +65,46 @@ cp -R "$(make path)" /Applications/
    other apps. Nothing works without it.
 2. **Microphone** and **Speech Recognition** — prompted the first time you
    dictate.
-3. **An engine** — menu bar icon → Settings → General. The default is the
-   local model, which works offline with no account; see below for what each
-   one needs.
+3. **The recogniser** — `make asr-setup`, once. Nothing to choose afterwards.
+4. **A rewrite engine** — menu bar icon → Settings → General. The default is
+   the local model, which works offline with no account; see below for what
+   each one needs.
 
-The first dictation in a given language may pause to download the on-device
-speech model. After that recognition is instant and fully offline — only the
-rewrite step can touch the network, and with the local engine it doesn't.
+The first dictation may pause while Apple downloads its on-device speech model
+for your language. After that recognition is fully offline — only the rewrite
+step can touch the network, and with the local engine it doesn't.
+
+## How it hears you
+
+Two recognisers run on every dictation, and there is no setting — the pair was
+chosen by measurement.
+
+**NVIDIA cache-aware streaming FastConformer** is the transcript. It has no
+punctuation head, so it physically cannot convert a spoken "colon" into a `:`
+or invent a comma at a pause; it writes down words and nothing else. It runs in
+a sidecar process (`Sidecar/asr_server.py`) because the app is signed with the
+hardened runtime, and linking ONNX Runtime in-process would mean signing
+third-party dylibs or disabling library validation.
+
+**Apple's SpeechTranscriber** runs alongside it and is never shown. It reaches
+the rewrite model as a second reading of the same audio, used only to settle
+words the transcript gets wrong. The two mishear different things — one writes
+"comma", the other "karma" or "carmin" — and that disagreement is the signal.
+
+Measured over 28 recordings from the session log:
+
+| | invented marks / 100 words | mean word delay | spoken marks kept |
+|---|---:|---:|---:|
+| FastConformer | **0.00** | 0.86 s | 94 |
+| Apple SpeechTranscriber | 13.75 | 0.69 s | 60 |
+
+"Spoken marks kept" above Apple's 60 means the transducer preserved *more* of
+the punctuation words that were actually said — Apple silently converts about a
+third of them, which is the whole reason for the change. The harness is in
+`Evals/verbatim/`.
+
+First run needs `make asr-setup`, which builds a small Python environment and
+downloads the model (~460 MB).
 
 ## Engines
 
@@ -112,7 +149,8 @@ log, and permission status.
 |---|---|---|
 | Engine | Local model (llama.cpp) | Switchable mid-session from the panel. |
 | Model repo | `bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M` | Any GGUF repo `llama-server -hf` accepts. |
-| Debounce | per engine — 200 ms local, 600 ms Bedrock | Quiet time before a rewrite fires. Kept per engine, since a local request is free and a hosted one is billed. Finals from the recogniser bypass it and fire immediately. |
+| Debounce | per engine — 200 ms local, 600 ms Bedrock | Quiet time before a rewrite fires. Kept per engine, since a local request is free and a hosted one is billed. |
+| Minimum gap between rewrites | 0 local, 1.5 s hosted | The real ceiling on spend. The recogniser emits only every second or two, so almost every update outlives any debounce worth having; only a floor on the gap between billed requests bounds it. It delays rather than drops — the newest text still gets rewritten. |
 | Insertion method | Paste | `Paste` (fast, universal) or `Type` (synthesises keystrokes, never touches the clipboard). |
 | Restore clipboard | on | Puts your previous clipboard back ~0.7 s after pasting. |
 | Session log | on | Appends every session to a local JSONL file. Nothing is uploaded. |
@@ -123,8 +161,8 @@ log, and permission status.
 
 Named personas, each carrying a **complete** system prompt — not a fragment
 layered onto something hidden, so what you see is exactly what the model is
-told. Ships with Default, Work, and Personal, and the active one is switchable
-from the panel and the menu bar.
+told. Ships with Default and Personal, and the active one is switchable from
+the panel and the menu bar.
 
 Shared rules live at the top of each prompt and are upgraded in place when the
 app updates, while the style section below stays yours. Those shared rules
@@ -308,14 +346,19 @@ to find out what F7 actually emits on a given keyboard.
 
 ```
 project.yml                  XcodeGen spec — the source of truth for the project
+Sidecar/asr_server.py        the streaming recogniser, behind a websocket
 Sources/
   App/         main.swift, AppDelegate (status item), SessionController
   Hotkey/      HotKeyMonitor — the F7 CGEventTap, HotKeyBinding
-  Dictation/   DictationEngine (SpeechAnalyzer), AudioFeeder, AudioDevices
+  Dictation/   DictationEngine (capture, device binding), AudioFeeder,
+               AudioDevices, RecognizerBackend + the three that implement it:
+               AppleRecognizerBackend, SocketRecognizerBackend, and
+               FanOutRecognizerBackend which runs both over one microphone.
+               RecognizerServerManager supervises the sidecar.
   LLM/         RewriteService (debounce + prompt), one client per engine:
                BedrockClient + SigV4 + AWSCredentials, LocalLLMClient +
                LlamaServerManager, AppleIntelligenceBackend, AnthropicClient
-  Editing/     EditTracker (manual corrections), TranscriptNormalizer
+  Editing/     EditTracker (manual corrections)
   Insertion/   TextInserter — clipboard + ⌘V into the target app
   UI/          DictationPanel (NSPanel), DictationView, SettingsView,
                StatisticsSettingsView, RewrittenEditor, WaveformView

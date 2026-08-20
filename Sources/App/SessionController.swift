@@ -23,23 +23,8 @@ final class SessionController: ObservableObject {
 
     /// Brings the sidecar up ahead of the first press of F7, so a model is not
     /// being paged in while the user is already talking.
-    ///
-    /// It used to also move the selected profile to a variant matching the
-    /// recogniser. That coupling is gone: which recogniser is running no longer
-    /// says anything about which profile should be used, and with several
-    /// running at once it could not have.
-    private func observeRecognizerChanges() {
-        settings.$recognizer
-            .removeDuplicates()
-            .sink { [weak self] choice in
-                guard let self else { return }
-                if choice.isSidecar {
-                    Task { await self.recognizerServer.start(for: choice) }
-                } else {
-                    self.recognizerServer.stop()
-                }
-            }
-            .store(in: &cancellables)
+    private func startRecognizerServer() {
+        Task { await recognizerServer.start(for: .record) }
     }
 
     /// The app that was frontmost when the panel opened -- the paste target.
@@ -73,7 +58,7 @@ final class SessionController: ObservableObject {
     private var loggedCurrentSession = false
 
     init() {
-        observeRecognizerChanges()
+        startRecognizerServer()
         dictation.onTranscriptChange = { [weak self] transcript, isFinal in
             self?.rewriter.transcriptChanged(transcript, isFinal: isFinal)
         }
@@ -371,11 +356,10 @@ final class SessionController: ObservableObject {
                 endedAt: Date(),
                 outcome: outcome,
                 transcript: transcript,
-                // Logged as it was actually sent, so a replayed session
-                // reproduces what the model saw rather than what it would see today.
-                normalizedTranscript: settings.normalizeInput
-                    ? TranscriptNormalizer.normalize(transcript)
-                    : transcript,
+                // Nothing pre-processes the transcript any more, so this is the
+                // transcript. Kept as a field because the log format is append-only
+                // and older lines still carry a genuinely different value.
+                normalizedTranscript: transcript,
                 rewrite: rewriter.output,
                 editedRewrite: hasUserEdited ? rewriter.output : nil,
                 profile: profiles.active.name,

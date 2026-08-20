@@ -37,19 +37,15 @@ clean:
 
 ASR_DIR = $(HOME)/Library/Application Support/ASRs-R-US/asr
 
-## Install the sidecar recogniser environment and download its models (~2.5 GB)
+## Install the sidecar recogniser environment and download its model (~460 MB)
 asr-setup:
 	@command -v uv >/dev/null || { echo "uv is required:  brew install uv"; exit 1; }
 	mkdir -p "$(ASR_DIR)/models"
 	uv venv --python 3.12 "$(ASR_DIR)/venv"
-	uv pip install --python "$(ASR_DIR)/venv/bin/python" sherpa-onnx vosk websockets numpy
+	uv pip install --python "$(ASR_DIR)/venv/bin/python" sherpa-onnx websockets numpy
 	@cd "$(ASR_DIR)/models" && \
 	  M=sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-1040ms; \
 	  [ -d "$$M" ] || { echo "fetching $$M"; \
 	    curl -sSL -o "$$M.tar.bz2" "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$$M.tar.bz2" && \
 	    tar xjf "$$M.tar.bz2" && rm "$$M.tar.bz2"; }
-	@cd "$(ASR_DIR)/models" && \
-	  [ -d vosk-model-en-us-0.22 ] || { echo "fetching vosk-model-en-us-0.22 (1.8 GB)"; \
-	    curl -sSL -o v.zip https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip && \
-	    unzip -q v.zip && rm v.zip; }
-	@echo "ready. Pick a recogniser in Settings > General."
+	@echo "ready."

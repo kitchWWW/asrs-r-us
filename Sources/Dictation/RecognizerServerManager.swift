@@ -20,7 +20,7 @@ final class RecognizerServerManager: ObservableObject {
     enum State: Equatable {
         case stopped
         case starting
-        /// Vosk's model is 1.8 GB and takes a few seconds to page in.
+        /// The model takes a moment to page in on a cold start.
         case loadingModel
         case ready
         case failed(String)
@@ -98,7 +98,7 @@ final class RecognizerServerManager: ObservableObject {
         }
         guard let model = modelDirectory(for: choice) else { return nil }
         if !FileManager.default.fileExists(atPath: model.path) {
-            return "The \(choice.displayName) model is not downloaded. Run:  make asr-setup"
+            return "The \(choice.shortName) model is not downloaded. Run:  make asr-setup"
         }
         if Self.scriptURL() == nil {
             return "asr_server.py is missing from the app bundle."
@@ -167,23 +167,15 @@ final class RecognizerServerManager: ObservableObject {
             state = .failed("The recogniser sidecar is not installed.")
             return
         }
-        // Load every sidecar recogniser whose model is present, not just the
-        // selected one. Cross-checking needs them all live at once, and a
-        // second process per model would double the Python and the ports for
-        // nothing -- one server serves them side by side.
+        // Every sidecar recogniser whose model is present. There is one, and
+        // the loop is kept rather than inlined because the server takes a list
+        // and adding a second engine should be a data change, not a rewrite.
         var engineArguments: [String] = []
         for candidate in RecognizerChoice.allCases where candidate.isSidecar {
             guard let name = candidate.sidecarEngine,
                   let directory = modelDirectory(for: candidate),
                   FileManager.default.fileExists(atPath: directory.path)
             else { continue }
-            // Load the selected recogniser, plus the cross-check pair when it
-            // is on. Anything else stays off disk and out of memory: Vosk's
-            // model alone is 2.7 GB resident.
-            let wanted = candidate == choice
-                || (settings.crossCheckRecognizers
-                    && RecognizerChoice.crossCheckSet.contains(candidate))
-            guard wanted else { continue }
             engineArguments += ["--engine", "\(name)=\(directory.path)"]
         }
         guard !engineArguments.isEmpty else {
@@ -225,7 +217,7 @@ final class RecognizerServerManager: ObservableObject {
             return
         }
 
-        // Vosk's model is the slow one; 60s is generous for both.
+        // Generous: a cold start pages the model in from disk.
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline {
             if !task.isRunning {
