@@ -43,6 +43,11 @@ final class SessionLog {
 
         /// Raw recognizer output. This is the corpus.
         var transcript: String
+        /// What the other recogniser(s) heard, by display name. Optional so
+        /// every line written before it was recorded still decodes. The pair
+        /// is the interesting artefact: where they disagree is where the
+        /// audio was genuinely ambiguous.
+        var alternateTranscripts: [String: String]?
         /// Transcript after the deterministic pre-model pass, so the two can be
         /// diffed to see what that layer is and isn't catching.
         var normalizedTranscript: String
@@ -53,6 +58,12 @@ final class SessionLog {
         /// correction that exists, but it is still not a full gold standard,
         /// since they only fix what bothers them enough to fix.
         var editedRewrite: String?
+
+        /// The history entry this session was reopened from, when it was.
+        /// A resumed session's transcript already contains the earlier one's
+        /// words, so without this the same speech would be counted twice by
+        /// anything reading the log as a corpus.
+        var resumedFrom: UUID?
 
         var profile: String
         var backend: String

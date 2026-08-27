@@ -240,6 +240,23 @@ final class RewriteService: ObservableObject {
         status = .idle
     }
 
+    /// Puts a finished session's rewrite back on screen without billing for it.
+    ///
+    /// The transcript is recorded as already settled *and* as already
+    /// requested, which is what stops a rewrite firing the moment the panel
+    /// opens: `rewrite` returns early for a transcript that is on screen
+    /// unchanged, so the restored text sits there costing nothing until the
+    /// user says something new -- and then the next rewrite covers the whole
+    /// thing, old words included.
+    func seed(output restored: String, transcript: String) {
+        reset()
+        output = restored
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        latestTranscript = trimmed
+        settledTranscript = trimmed
+        lastRequestedTranscript = trimmed
+    }
+
     // MARK: - Core
 
     private func rewrite(transcript: String, force: Bool = false) async {

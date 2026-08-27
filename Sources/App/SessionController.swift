@@ -59,6 +59,10 @@ final class SessionController: ObservableObject {
     private var sessionID = UUID()
     private var sessionStartedAt = Date()
     private var loggedCurrentSession = false
+    /// The history entry the session on screen was reopened from, if any.
+    /// Recorded in the log so a resumed session, whose transcript repeats the
+    /// earlier one's words, is not read as a second independent sample.
+    private var resumedFrom: DictationHistory.Entry.ID?
 
     init() {
         startRecognizerServer()
@@ -122,11 +126,71 @@ final class SessionController: ObservableObject {
         sessionID = UUID()
         sessionStartedAt = Date()
         loggedCurrentSession = false
+        resumedFrom = nil
         lastUserEdit = nil
         dictation.reset()
         rewriter.reset()
         editTracker.reset()
         Task { await dictation.start() }
+    }
+
+    /// Reopens a finished dictation from the menu bar: both boxes come back as
+    /// they were, and the microphone starts again with the restored words as
+    /// the prefix, so anything said now is appended to the end.
+    ///
+    /// The point is that the rewrite is no longer the only thing that survived
+    /// a session. Pasting it directly forced the model's version on the user
+    /// even when the transcript held something it had dropped; with both boxes
+    /// back, Use and Use Transcript mean what they always meant, and the
+    /// rewritten box can simply be edited.
+    func resumeSession(from entry: DictationHistory.Entry, target: NSRunningApplication?) {
+        Task { await resume(entry, target: target) }
+    }
+
+    private func resume(_ entry: DictationHistory.Entry, target: NSRunningApplication?) async {
+        // Anything still live has to be torn down *before* the restored text is
+        // put in place, for the reason `clearAndRestart` spells out: stopping a
+        // recogniser flushes its buffered audio as one last result, and doing
+        // that afterwards would drop stale words into the middle of the
+        // session we are trying to restore.
+        if dictation.isRecording || dictation.state == .preparing {
+            await dictation.stop()
+            logSession(outcome: .abandoned)
+            await Task.yield()
+        }
+
+        targetApp = target
+        // The profile the session was dictated under, not the one the target
+        // app maps to: this is a continuation of that dictation, and a rewrite
+        // of the restored words in some other voice is not what reopening it
+        // means.
+        if let id = profiles.profiles.first(where: { $0.name == entry.profileName })?.id {
+            profiles.selectedID = id
+        }
+        lastError = nil
+        didInsert = false
+        hasUserEdited = false
+        sessionID = UUID()
+        sessionStartedAt = Date()
+        loggedCurrentSession = false
+        resumedFrom = entry.id
+        lastUserEdit = nil
+
+        dictation.reset()
+        dictation.seed(
+            transcript: entry.restoredTranscript,
+            alternates: entry.restoredAlternates.map { (name: $0.name, text: $0.text) }
+        )
+        rewriter.seed(output: entry.restoredRewrite, transcript: entry.restoredTranscript)
+        editTracker.reset()
+        // The restored text *is* the model's last word on this dictation, so it
+        // is the baseline every edit is measured against. Without this the box
+        // starts full while the tracker believes it is empty, and the first
+        // keystroke reads as "the user inserted <the entire text>" -- which
+        // then goes into the next prompt as a binding correction.
+        editTracker.setBaseline(entry.restoredRewrite)
+
+        await dictation.start()
     }
 
     /// Switches to the profile this app is mapped to, and remembers the app so
@@ -171,6 +235,9 @@ final class SessionController: ObservableObject {
             sessionID = UUID()
             sessionStartedAt = Date()
             loggedCurrentSession = false
+            // Whatever was restored has just been wiped, so this is no longer
+            // a continuation of it.
+            resumedFrom = nil
 
             await dictation.start()
         }
@@ -331,7 +398,15 @@ final class SessionController: ObservableObject {
                 recogniser drain a further \
                 \(ms(ContinuousClock.now - pasted), privacy: .public)ms
                 """)
-            DictationHistory.shared.record(text, profileName: profiles.active.name)
+            DictationHistory.shared.record(
+                text,
+                transcript: dictation.transcript,
+                alternates: dictation.alternateTranscripts.map {
+                    DictationHistory.AlternateReading(name: $0.name, text: $0.text)
+                },
+                rewrite: rewriter.output,
+                profileName: profiles.active.name
+            )
             logSession(outcome: outcome)
             didInsert = true
             return true
@@ -386,12 +461,17 @@ final class SessionController: ObservableObject {
                 endedAt: Date(),
                 outcome: outcome,
                 transcript: transcript,
+                alternateTranscripts: Dictionary(
+                    dictation.alternateTranscripts.map { ($0.name, $0.text) },
+                    uniquingKeysWith: { first, _ in first }
+                ),
                 // Nothing pre-processes the transcript any more, so this is the
                 // transcript. Kept as a field because the log format is append-only
                 // and older lines still carry a genuinely different value.
                 normalizedTranscript: transcript,
                 rewrite: rewriter.output,
                 editedRewrite: hasUserEdited ? rewriter.output : nil,
+                resumedFrom: resumedFrom,
                 profile: profiles.active.name,
                 backend: settings.backend.rawValue,
                 model: settings.backend == .local ? settings.localModelRepo : settings.model,

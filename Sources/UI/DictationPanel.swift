@@ -36,12 +36,27 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
     /// Opens the panel and starts a new session targeting whatever app is
     /// frontmost right now.
     func present() {
-        // The tracker, not `frontmostApplication`: opening from the status menu
-        // can leave us frontmost, which would record ASRs-R-US as its own paste
-        // target.
-        let target = FrontmostAppTracker.shared.target
-        session.beginSession(target: target)
+        session.beginSession(target: currentTarget())
+        showPanel()
+    }
 
+    /// Opens the panel on a finished dictation instead of an empty one: both
+    /// boxes come back as they were and the microphone picks up where it left
+    /// off. The window is identical either way -- a restored session is a
+    /// session, not a viewer.
+    func reopen(_ entry: DictationHistory.Entry) {
+        session.resumeSession(from: entry, target: currentTarget())
+        showPanel()
+    }
+
+    /// The tracker, not `frontmostApplication`: opening from the status menu
+    /// can leave us frontmost, which would record ASRs-R-US as its own paste
+    /// target.
+    private func currentTarget() -> NSRunningApplication? {
+        FrontmostAppTracker.shared.target
+    }
+
+    private func showPanel() {
         let panel = panel ?? makePanel()
         self.panel = panel
 

@@ -92,14 +92,31 @@ final class DictationEngine: ObservableObject {
     /// Set when several recognisers are running, so their disagreement can be
     /// read off when a rewrite is assembled.
     private weak var alternateSource: FanOutRecognizerBackend?
+    /// The same idea as `carriedText`, for the recognisers that ride along:
+    /// what they heard before the current backend existed, keyed by display
+    /// name. Filled when a backend is torn down and when a stored session is
+    /// restored, so a second opinion survives a stop/start pair instead of
+    /// vanishing with the object that produced it -- `alternateSource` is weak,
+    /// and teardown is the moment it goes.
+    private var carriedAlternates: [String: String] = [:]
 
     /// What the other recognisers heard, for the rewrite prompt. Empty unless
     /// cross-checking is on.
     var alternateTranscripts: [(name: String, text: String)] {
-        guard let alternateSource else { return [] }
-        return alternateSource.alternates
+        var merged = carriedAlternates
+        for (choice, text) in alternateSource?.alternates ?? [:] {
+            let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !piece.isEmpty else { continue }
+            let name = choice.shortName
+            if let carried = merged[name], !carried.isEmpty {
+                merged[name] = carried + " " + piece
+            } else {
+                merged[name] = piece
+            }
+        }
+        return merged
             .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { (name: $0.key.shortName, text: $0.value) }
+            .map { (name: $0.key, text: $0.value) }
             .sorted { $0.name < $1.name }
     }
     private var levelTimer: Timer?
@@ -173,9 +190,28 @@ final class DictationEngine: ObservableObject {
         // A session nobody logged still has to release its file.
         finishRecording()
         carriedText = ""
+        carriedAlternates = [:]
         finalizedText = ""
         volatileText = ""
         if case .failed = state { state = .idle }
+    }
+
+    /// Restores a finished dictation so speaking again continues it.
+    ///
+    /// Exactly what a stop/start pair leaves behind, assembled from a stored
+    /// session instead of from a backend that has just been torn down: the old
+    /// words become the prefix every future result is appended to, and the old
+    /// second opinions become the prefix of the new ones. Call after `reset()`
+    /// and before `start()`.
+    func seed(transcript: String, alternates: [(name: String, text: String)]) {
+        let restored = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        carriedText = restored
+        finalizedText = restored
+        volatileText = ""
+        carriedAlternates = Dictionary(
+            alternates.map { ($0.name, $0.text) },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     // MARK: - Permissions
@@ -509,6 +545,13 @@ final class DictationEngine: ObservableObject {
         // the tail of the last sentence still lands as a final result. Each
         // backend knows what that means for itself.
         await backend?.finish()
+        // Read the second opinions out *before* the backend goes: they live on
+        // the fan-out object, which `alternateSource` only holds weakly, so a
+        // moment from now there is nothing left to read them from.
+        carriedAlternates = Dictionary(
+            alternateTranscripts.map { ($0.name, $0.text) },
+            uniquingKeysWith: { first, _ in first }
+        )
         backend = nil
         // Drop the input node along with the engine. A stopped AVAudioEngine is
         // not an inert one -- its node stays instantiated and re-resolves when

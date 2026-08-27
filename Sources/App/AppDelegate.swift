@@ -245,7 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// The last 10 insertions; clicking one copies it back to the clipboard.
+    /// The last 10 insertions; clicking one reopens it in the dictation window.
     private func addHistoryItems(to menu: NSMenu) {
         let header = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
         header.isEnabled = false
@@ -260,18 +260,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        for (index, entry) in history.entries.enumerated() {
+        for entry in history.entries {
             let item = NSMenuItem(
                 title: entry.menuTitle,
-                action: #selector(copyHistoryEntry(_:)),
+                action: #selector(reopenHistoryEntry(_:)),
                 keyEquivalent: ""
             )
             item.target = self
             item.representedObject = entry.id
             item.indentationLevel = 1
             item.toolTip = entry.text
-            // Wording matches what the click now does.
             menu.addItem(item)
+
+            // Option-click keeps the old behaviour -- paste it straight in --
+            // for when the rewrite is already what was wanted and opening a
+            // window to press Use would only be in the way.
+            let insert = NSMenuItem(
+                title: entry.menuTitle,
+                action: #selector(insertHistoryEntry(_:)),
+                keyEquivalent: ""
+            )
+            insert.target = self
+            insert.representedObject = entry.id
+            insert.indentationLevel = 1
+            insert.toolTip = "Insert this text without opening the window"
+            insert.keyEquivalentModifierMask = .option
+            insert.isAlternate = true
+            menu.addItem(insert)
         }
 
         let clear = NSMenuItem(
@@ -303,13 +318,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ProfileStore.shared.selectedID = id
     }
 
+    /// Reopens the dictation window on that session -- transcript, rewrite and
+    /// the microphone -- rather than pasting the rewrite and calling it done.
+    ///
+    /// Insertion was the wrong default: it committed the user to the model's
+    /// version of what they said, which is not always the one that has
+    /// everything in it. Reopened, the session offers both boxes and the
+    /// choice between them, and speaking again simply carries on from the end.
+    @objc private func reopenHistoryEntry(_ sender: NSMenuItem) {
+        guard let entry = historyEntry(for: sender) else { return }
+        windowController.reopen(entry)
+    }
+
+    private func historyEntry(for item: NSMenuItem) -> DictationHistory.Entry? {
+        guard let id = item.representedObject as? DictationHistory.Entry.ID else { return nil }
+        return DictationHistory.shared.entries.first { $0.id == id }
+    }
+
     /// Inserts the entry where the user was working, rather than only copying
     /// it and making them paste. Falls back to the clipboard when there is no
     /// app to target.
-    @objc private func copyHistoryEntry(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? DictationHistory.Entry.ID,
-              let entry = DictationHistory.shared.entries.first(where: { $0.id == id })
-        else { return }
+    @objc private func insertHistoryEntry(_ sender: NSMenuItem) {
+        guard let entry = historyEntry(for: sender) else { return }
 
         guard let target = FrontmostAppTracker.shared.target else {
             DictationHistory.shared.copyToClipboard(entry)
