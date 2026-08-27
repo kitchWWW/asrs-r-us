@@ -145,11 +145,21 @@ final class RewriteService: ObservableObject {
     ///
     /// The **minimum interval** is the real ceiling on spend, and exists
     /// because the debounce turns out to be nearly inert for the sidecar
-    /// recognisers. They emit an update every one to two seconds, so almost
-    /// every update outlives any debounce worth having and becomes a request.
-    /// Only a floor on the gap between billed requests bounds that. It delays
-    /// rather than drops: the newest text still gets rewritten, just no sooner
-    /// than the engine allows.
+    /// recognisers. They emit an update every second or so, so almost every
+    /// update outlives any debounce worth having and becomes a request. Only a
+    /// floor on the gap between billed requests bounds that. It delays rather
+    /// than drops: the newest text still gets rewritten, just no sooner than
+    /// the engine allows.
+    ///
+    /// The two combine with `max`, not `+`. They are clocks from different
+    /// origins -- the debounce runs from the last update, the throttle from
+    /// the last request -- and quiet time accrues perfectly well while the
+    /// throttle is still counting down. Adding them made the two waits
+    /// sequential: a 700 ms floor on top of Bedrock's 1500 ms interval put
+    /// 2200 ms between rewrites and capped the rate at 27 a minute, where the
+    /// interval alone says 40. The extra 700 ms coalesced nothing and was paid
+    /// on every rewrite; the session log shows live rewrites landing 2.3 s
+    /// apart, pinned to that stacked floor rather than to either limit.
     ///
     /// Either way the request is skipped when the text is unchanged from the
     /// one already sent, so a final that merely confirms the volatile tail
@@ -168,7 +178,7 @@ final class RewriteService: ObservableObject {
         let debounce = treatAsFinal
             ? 0
             : max(120, max(settings.debounceMilliseconds, recognizer.debounceFloorMilliseconds))
-        let delay = UInt64(debounce + throttleMilliseconds()) * 1_000_000
+        let delay = UInt64(max(debounce, throttleMilliseconds())) * 1_000_000
 
         guard delay > 0 else {
             Task { [weak self] in await self?.rewrite(transcript: trimmed) }
@@ -199,12 +209,17 @@ final class RewriteService: ObservableObject {
 
     /// Forces an immediate rewrite, ignoring the debounce (used when recording
     /// stops, so the final transcript always gets one last pass).
-    func flush(transcript: String) {
+    ///
+    /// `force` separates the two callers. Stopping wants the tail polished,
+    /// and if a rewrite of exactly this text is already streaming or already
+    /// on screen then it is polished -- see `rewrite`. Run Now is an explicit
+    /// press and re-runs regardless, rather than reading as a dead button.
+    func flush(transcript: String, force: Bool = false) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         latestTranscript = trimmed
         debounceTask?.cancel()
-        Task { await rewrite(transcript: trimmed, force: true) }
+        Task { await rewrite(transcript: trimmed, force: force) }
     }
 
     func cancel() {
@@ -228,6 +243,17 @@ final class RewriteService: ObservableObject {
     // MARK: - Core
 
     private func rewrite(transcript: String, force: Bool = false) async {
+        // Nothing to do when this exact text is already in flight or already
+        // settled on screen. Below, this method cancels whatever is streaming,
+        // so coming through here again for the same words threw away a request
+        // that was most of the way done and billed a replacement producing the
+        // identical result -- and it was paid at the worst possible moment,
+        // right after the user pressed stop and started watching the spinner.
+        // A failed attempt is not settled, so it still retries.
+        if !force, transcript == lastRequestedTranscript,
+           status == .rewriting || settledTranscript == transcript {
+            return
+        }
         rewriteCount += 1
         let backend: RewriteBackend
         switch makeBackend() {

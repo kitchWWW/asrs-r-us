@@ -95,7 +95,15 @@ final class FanOutRecognizerBackend: RecognizerBackend {
     }
 
     func finish() async {
-        await primary.finish()
-        for (_, backend) in secondaries { await backend.finish() }
+        // Concurrently. Each one flushes a different recogniser and they have
+        // nothing to say to each other, so running them in sequence just added
+        // their drain times together on the way out -- time the user spends
+        // watching a spinner.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor [primary] in await primary.finish() }
+            for (_, backend) in secondaries {
+                group.addTask { @MainActor in await backend.finish() }
+            }
+        }
     }
 }

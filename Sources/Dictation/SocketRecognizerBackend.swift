@@ -34,6 +34,12 @@ final class SocketRecognizerBackend: RecognizerBackend {
     private var pump: Task<Void, Never>?
     private var receiver: Task<Void, Never>?
     private var finished = false
+    /// Resumed by `receiveLoop` when the server answers "DONE" with the final
+    /// transcript, so `finish()` can stop waiting the moment it arrives.
+    private var finalArrival: CheckedContinuation<Void, Never>?
+    /// Set once the server has sent a final, so `finish()` does not wait for
+    /// one that already arrived.
+    private var sawFinal = false
 
     /// 16 kHz mono is what both sidecar models are built for.
     ///
@@ -155,7 +161,10 @@ final class SocketRecognizerBackend: RecognizerBackend {
                       let text = object["text"] as? String
                 else { continue }
                 let isFinal = (object["final"] as? Bool) ?? false
-                await MainActor.run { onResult((text, isFinal)) }
+                await MainActor.run {
+                    onResult((text, isFinal))
+                    if isFinal { self.signalFinal() }
+                }
             } catch {
                 if !Task.isCancelled {
                     log.error("recogniser socket closed: \(error.localizedDescription)")
@@ -163,6 +172,13 @@ final class SocketRecognizerBackend: RecognizerBackend {
                 return
             }
         }
+    }
+
+    /// Wakes `finish()` as soon as the final transcript lands.
+    private func signalFinal() {
+        sawFinal = true
+        finalArrival?.resume()
+        finalArrival = nil
     }
 
     func finish() async {
@@ -176,8 +192,27 @@ final class SocketRecognizerBackend: RecognizerBackend {
                 try? await socket.send(.data(chunk))
             }
             try? await socket.send(.string("DONE"))
-            // Give the server a moment to answer with the final transcript.
-            try? await Task.sleep(nanoseconds: 400_000_000)
+
+            // Wait for the final transcript rather than for a fixed interval.
+            // This used to sleep 400 ms unconditionally, which is roughly ten
+            // times what the server actually needs and was paid on every single
+            // insertion, in full view of the user.
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { @MainActor [weak self] in
+                    await withCheckedContinuation { continuation in
+                        guard let self, !self.sawFinal else {
+                            continuation.resume(); return
+                        }
+                        self.finalArrival = continuation
+                    }
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
+                await group.next()
+                group.cancelAll()
+            }
+            finalArrival = nil
         }
 
         pump?.cancel()

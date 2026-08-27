@@ -274,7 +274,7 @@ struct DictationView: View {
                 }
                 .buttonStyle(.glassControl)
                 .disabled(!session.canRunNow || session.isRunningNow)
-                .help("Rewrite the transcript as it stands now, without waiting")
+                .help("Rewrite the transcript as it stands now, without waiting (\u{2192})")
 
                 Button {
                     Task { await useTranscriptAction?() }

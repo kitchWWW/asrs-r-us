@@ -67,13 +67,21 @@ enum RecognizerChoice: String, CaseIterable, Identifiable, Codable {
     /// Shortest debounce that still coalesces anything, given how often this
     /// recogniser actually emits.
     ///
-    /// Measured updates per minute of speech: 28.7 for the transducer, roughly
-    /// one every two seconds. A 200 ms debounce is therefore *inert* -- updates
-    /// arrive far enough apart that every one survives it and becomes a
-    /// request. This is a floor, not an override: the per-engine setting still
-    /// applies and the larger of the two wins. It is also not the main
-    /// protection against a token bill -- that is
-    /// `minimumRewriteIntervalMilliseconds`, because no debounce can help when
-    /// updates are already seconds apart.
-    var debounceFloorMilliseconds: Int { self == .nemo ? 700 : 0 }
+    /// Zero, for both, and the reasoning is worth keeping because it was wrong
+    /// once. This was 700 ms for the transducer, justified by a measured 28.7
+    /// updates per minute -- but that figure counts endpoints, from
+    /// `Evals/verbatim/cadence.py`, and the live wire is not endpointed.
+    /// `asr_server.py` sends a frame on *every change to the text*, and the
+    /// model is the 1040 ms cache-aware FastConformer, so updates arrive on
+    /// roughly a one-second chunk cadence rather than a two-second one.
+    ///
+    /// A debounce only coalesces when it outlives the gap between updates. At
+    /// 700 ms against ~1040 ms nearly every update survived it and became a
+    /// request anyway: it bought no coalescing at all and cost 700 ms on every
+    /// rewrite. That is the same argument this file already made for why
+    /// 200 ms is inert; it simply applies unchanged at 700.
+    ///
+    /// Spend is bounded by `minimumRewriteIntervalMilliseconds` instead, which
+    /// is the only thing that can help when updates are already seconds apart.
+    var debounceFloorMilliseconds: Int { 0 }
 }

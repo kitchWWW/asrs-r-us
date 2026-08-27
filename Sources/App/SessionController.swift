@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import os
 
 /// Coordinates one dictation session: which app to paste back into, the
 /// recognizer, the rewriter, and the user's manual edits.
@@ -43,6 +44,8 @@ final class SessionController: ObservableObject {
 
     /// True while the user has been typing recently, so streaming rewrites
     /// don't yank text out from under them mid-word.
+    private static let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "session")
+
     private var lastUserEdit: Date?
     private let userEditGrace: TimeInterval = 1.5
 
@@ -226,8 +229,10 @@ final class SessionController: ObservableObject {
         let frozen = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !frozen.isEmpty {
             // Supersedes whatever is in flight or still waiting out the
-            // debounce; `flush` cancels both.
-            rewriter.flush(transcript: frozen)
+            // debounce; `flush` cancels both. Forced, because this is an
+            // explicit press: a rewrite that is already streaming this exact
+            // text would otherwise make the button a no-op.
+            rewriter.flush(transcript: frozen, force: true)
         }
 
         if wasRecording { await dictation.start() }
@@ -292,12 +297,20 @@ final class SessionController: ObservableObject {
 
         isInserting = true
         defer { isInserting = false }
-
-        // Stop the mic first: pasting into the target while still recording
-        // would keep appending transcript into a session the user is done with.
-        if dictation.isRecording { await dictation.stop() }
         rewriter.cancel()
 
+        // The recogniser flush and the paste have nothing to do with each
+        // other: the text being inserted is already a string in hand, and
+        // stopping only matters so the session log gets the final transcript
+        // and the mic stops listening. Started here and awaited after the
+        // paste, the drain hides behind the activation wait instead of the two
+        // adding up.
+        let stopping = Task { @MainActor [weak self] in
+            guard let self, self.dictation.isRecording else { return }
+            await self.dictation.stop()
+        }
+
+        let useStarted = ContinuousClock.now
         do {
             try await TextInserter.insert(
                 text,
@@ -305,11 +318,28 @@ final class SessionController: ObservableObject {
                 method: settings.insertionMethod,
                 restorePasteboard: settings.restorePasteboard
             )
+            // Only after this does the transcript stop changing, so nothing
+            // that reads it may run before it.
+            let pasted = ContinuousClock.now
+            await stopping.value
+            let ms = { (d: Duration) -> Int in
+                Int(Double(d.components.seconds) * 1000
+                    + Double(d.components.attoseconds) / 1e15)
+            }
+            Self.log.info("""
+                use: insert \(ms(pasted - useStarted), privacy: .public)ms, \
+                recogniser drain a further \
+                \(ms(ContinuousClock.now - pasted), privacy: .public)ms
+                """)
             DictationHistory.shared.record(text, profileName: profiles.active.name)
             logSession(outcome: outcome)
             didInsert = true
             return true
         } catch {
+            // Still let the recogniser finish: the session is over either way,
+            // and leaving the microphone open on a failed insertion would be a
+            // worse bug than the one that just happened.
+            await stopping.value
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return false
         }

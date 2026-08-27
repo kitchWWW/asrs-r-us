@@ -39,20 +39,32 @@ enum TextInserter {
         }
     }
 
+    /// Everything that can be known to fail before any slow work starts.
+    ///
+    /// Split out so the caller can dismiss the panel the instant it knows the
+    /// insertion will be attempted, instead of holding it on screen through
+    /// activation and paste and only then finding out.
+    static func precheck(_ target: NSRunningApplication?) throws {
+        guard AXIsProcessTrusted() else { throw InsertError.accessibilityDenied }
+        guard let target, !target.isTerminated else { throw InsertError.noTargetApp }
+    }
+
     static func insert(
         _ text: String,
         into target: NSRunningApplication?,
         method: Method,
         restorePasteboard: Bool
     ) async throws {
-        guard AXIsProcessTrusted() else { throw InsertError.accessibilityDenied }
-        guard let target, !target.isTerminated else { throw InsertError.noTargetApp }
+        try precheck(target)
+        guard let target else { throw InsertError.noTargetApp }
 
+        let started = ContinuousClock.now
         target.activate()
 
         // Wait for the target to actually come forward. Delivering input to an
         // app that is not yet key drops it on the floor.
         await waitUntilFrontmost(target, timeout: .milliseconds(900))
+        let activated = ContinuousClock.now
 
         switch method {
         case .type:
@@ -61,7 +73,18 @@ enum TextInserter {
             await pasteText(text, restorePasteboard: restorePasteboard)
         }
 
-        log.info("inserted \(text.count) characters into \(target.bundleIdentifier ?? "unknown") via \(method.rawValue)")
+        // Timed because this is the part the user watches. Split at activation
+        // so a slow target app is distinguishable from a slow paste.
+        let ms = { (d: Duration) -> Int in
+            Int(Double(d.components.seconds) * 1000
+                + Double(d.components.attoseconds) / 1e15)
+        }
+        log.info("""
+            inserted \(text.count) characters into \
+            \(target.bundleIdentifier ?? "unknown") via \(method.rawValue) -- \
+            activate \(ms(activated - started), privacy: .public)ms, \
+            deliver \(ms(ContinuousClock.now - activated), privacy: .public)ms
+            """)
     }
 
     // MARK: - Paste strategy
@@ -169,7 +192,11 @@ enum TextInserter {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 return
             }
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            // Polled tightly: the caller dismisses its own window before
+            // getting here, so activation usually completes within a frame or
+            // two and a coarse interval would spend most of the wait asleep
+            // after the target was already ready.
+            try? await Task.sleep(nanoseconds: 8_000_000)
         }
         log.warning("target app never became frontmost; inserting anyway")
     }

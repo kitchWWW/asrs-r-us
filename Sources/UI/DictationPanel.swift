@@ -17,7 +17,7 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
 
     private let session: SessionController
     private var panel: DictationPanel?
-    private var returnMonitor: Any?
+    private var keyMonitor: Any?
 
     init(session: SessionController) {
         self.session = session
@@ -51,12 +51,12 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
         // Do not hand first responder to the output editor on open, so the
         // caret is not sitting in the text box before the user asks for it.
         panel.makeFirstResponder(nil)
-        installReturnMonitor()
+        installKeyMonitor()
         session.isPanelVisible = true
     }
 
     func dismiss(activatingTarget: Bool = false) {
-        removeReturnMonitor()
+        removeKeyMonitor()
         session.endSession()
         panel?.orderOut(nil)
         session.isPanelVisible = false
@@ -76,34 +76,70 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Plain Return means "use this" until the user starts editing the
-    /// rewritten text, at which point it belongs to the editor as a newline.
+    /// The panel's two bare-key shortcuts: Return inserts, Right Arrow runs.
     ///
-    /// Handled with a local event monitor rather than a SwiftUI
-    /// `.keyboardShortcut`: once an `NSTextView` has focus it consumes Return
-    /// first, and the shortcut never fires.
-    private func installReturnMonitor() {
-        guard returnMonitor == nil else { return }
-        returnMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+    /// Both are handled with a local event monitor rather than a SwiftUI
+    /// `.keyboardShortcut`, for the same reason: once an `NSTextView` has
+    /// focus it consumes plain keys first and the shortcut never fires. Which
+    /// also means the monitor, not SwiftUI, is responsible for giving them
+    /// back when the caret genuinely wants them.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let panel = self.panel, panel.isKeyWindow else { return event }
-            guard event.keyCode == UInt16(kVK_Return) else { return event }
-
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let isCommandReturn = modifiers == .command
-            guard isCommandReturn || modifiers.isEmpty else { return event }
 
-            // Once edited, only Cmd-Return inserts; bare Return types a newline.
-            if !isCommandReturn && self.session.hasUserEdited { return event }
-            guard self.session.canInsert else { return event }
+            switch Int(event.keyCode) {
+            case kVK_Return:
+                let isCommandReturn = modifiers == .command
+                guard isCommandReturn || modifiers.isEmpty else { return event }
+                // Once edited, only Cmd-Return inserts; bare Return types a newline.
+                if !isCommandReturn && self.session.hasUserEdited { return event }
+                guard self.session.canInsert else { return event }
+                Task { await self.performUse() }
+                return nil          // swallow
 
-            Task { await self.performUse() }
-            return nil          // swallow
+            case kVK_RightArrow:
+                // "I have stopped talking, take it from here." Does exactly
+                // what the Run button does: freeze the transcript, drain the
+                // recogniser, and send the moment the tail comes back.
+                //
+                // Only when the caret is not in the rewritten-text box. There
+                // the arrow keys belong to the caret, and swallowing one would
+                // leave the box impossible to navigate -- which is a worse bug
+                // than not having the shortcut.
+                //
+                // Arrow keys are never "unmodified": the window server stamps
+                // every one with .function and .numericPad, so the plain
+                // `modifiers.isEmpty` test used for Return rejects all of them
+                // and the key falls through the responder chain as a beep.
+                // Only the modifiers a user could actually hold disqualify it.
+                let held: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+                guard modifiers.intersection(held).isEmpty, !self.isEditingText else { return event }
+
+                // Swallowed either way. Run can be unavailable -- nothing said
+                // yet, or a run already in flight -- and a disabled button does
+                // not beep at whoever presses it.
+                if self.session.canRunNow, !self.session.isRunningNow {
+                    Task { await self.session.runRewriteNow() }
+                }
+                return nil
+
+            default:
+                return event
+            }
         }
     }
 
-    private func removeReturnMonitor() {
-        if let returnMonitor { NSEvent.removeMonitor(returnMonitor) }
-        returnMonitor = nil
+    /// True while the caret is in the rewritten-text box, which owns the arrow
+    /// keys for as long as it has focus.
+    private var isEditingText: Bool {
+        panel?.firstResponder is NSTextView
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
     }
 
     // MARK: - Construction
@@ -179,9 +215,15 @@ final class DictationWindowController: NSObject, NSWindowDelegate {
         await finishInsertion(succeeded: await session.useTranscript())
     }
 
+    /// The panel stays up until the insertion has actually landed.
+    ///
+    /// It would be faster to close it first -- the window holds key while the
+    /// target is trying to come forward -- but a failure would then take the
+    /// text away with nothing on screen to say why. The panel is where errors
+    /// are visible, so it waits.
     private func finishInsertion(succeeded: Bool) async {
         guard succeeded else { return }
-        removeReturnMonitor()
+        removeKeyMonitor()
         panel?.orderOut(nil)
         session.isPanelVisible = false
     }
