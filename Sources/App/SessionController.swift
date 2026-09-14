@@ -327,12 +327,15 @@ final class SessionController: ObservableObject {
 
     /// The Use button and its ⌘↩ shortcut.
     ///
-    /// Falls through to the raw transcript when no rewrite has arrived yet.
-    /// Speaking quickly outruns the rewriter, and the alternative was watching
-    /// a dead button and then reaching for a second one -- so Use means "take
-    /// what is on screen", and what is on screen when the bottom box is empty
-    /// is the transcript. It is logged as the latency fallback it is, which is
-    /// what keeps the statistics honest about how often this happens.
+    /// Takes whatever is in the output box the instant it is pressed. A rewrite
+    /// still streaming is cancelled by `use`, not waited for: Use means "send
+    /// what I can see", and a press that stalls on the model is a press the
+    /// user has to sit through with their cursor parked in another app. If the
+    /// rewriter is slow, the fix belongs in the rewriter's pacing, not here.
+    ///
+    /// Falls through to the raw transcript when the box is empty. That is
+    /// logged as `usedTranscriptNoRewrite` so the statistics stay honest about
+    /// how often the model never got a word in.
     func useOutput() async -> Bool {
         let rewritten = rewriter.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard rewritten.isEmpty else { return await use(rewriter.output) }

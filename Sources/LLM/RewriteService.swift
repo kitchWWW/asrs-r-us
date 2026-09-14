@@ -170,6 +170,16 @@ final class RewriteService: ObservableObject {
         latestTranscript = trimmed
         guard trimmed != lastRequestedTranscript else { return }
 
+        scheduleRewrite(of: trimmed, isFinal: isFinal)
+    }
+
+    /// Puts a transcript in the queue behind the debounce and the throttle.
+    ///
+    /// Split out of `transcriptChanged` because it has a second caller:
+    /// `drainQueuedRewrite`, which sends the words that arrived while a
+    /// request was in flight. Both want the same pacing, and a rewrite that
+    /// skipped it because of where it came from would be a hole in the floor.
+    private func scheduleRewrite(of transcript: String, isFinal: Bool) {
         debounceTask?.cancel()
 
         let recognizer = RecognizerChoice.record
@@ -181,7 +191,7 @@ final class RewriteService: ObservableObject {
         let delay = UInt64(max(debounce, throttleMilliseconds())) * 1_000_000
 
         guard delay > 0 else {
-            Task { [weak self] in await self?.rewrite(transcript: trimmed) }
+            Task { [weak self] in await self?.rewrite(transcript: transcript) }
             return
         }
         debounceTask = Task { [weak self] in
@@ -197,14 +207,55 @@ final class RewriteService: ObservableObject {
         }
     }
 
+    /// Sends the newest transcript once the request that was in flight lands.
+    ///
+    /// The other half of the coalescing rule in `rewrite`: an update that
+    /// arrived mid-request deliberately did not cancel it, so nothing has gone
+    /// out for those words yet and only this can send them. Scheduled through
+    /// the same debounce and throttle as any other update, so letting a
+    /// request finish never becomes a way around the spend floor.
+    private func drainQueuedRewrite() {
+        let latest = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !latest.isEmpty, latest != lastRequestedTranscript else { return }
+        scheduleRewrite(of: latest, isFinal: false)
+    }
+
     /// How much longer this request has to wait to respect the engine's
     /// minimum gap between billed rewrites. Zero when the engine is free or
     /// enough time has already passed.
     private func throttleMilliseconds() -> Int {
-        let minimum = settings.backend.minimumRewriteIntervalMilliseconds
+        let minimum = minimumRewriteInterval()
         guard minimum > 0, let last = lastRequestStartedAt else { return 0 }
         let elapsed = Int(Date().timeIntervalSince(last) * 1000)
         return max(0, minimum - elapsed)
+    }
+
+    /// Shortest gap allowed between two billed rewrites -- measured, not assumed.
+    ///
+    /// The static floor in `RewriteBackendKind` is a spend argument and knows
+    /// nothing about how long a request actually takes. On Bedrock it was set
+    /// to 1500 ms against a measured median of 1860 ms, so the next request
+    /// was scheduled *before* the previous one could land. Every rewrite died
+    /// a few hundred milliseconds short: 79% of them cancelled over 12,837
+    /// requests, against 36% on the local model, and 10.5% of Bedrock sessions
+    /// reached the paste with an empty output box against 0.6% locally.
+    ///
+    /// So the floor is raised to whatever the engine is really doing. The
+    /// coalescing in `rewrite` is what makes starvation impossible; this is
+    /// what stops the app queueing the next request into a gap the engine has
+    /// never once finished in.
+    ///
+    /// Only where a floor already exists. Zero means "this runs on my Mac and
+    /// there is nothing to protect", and pacing a free engine to its own
+    /// latency would slow down the one backend that was never broken.
+    private func minimumRewriteInterval() -> Int {
+        let floor = settings.backend.minimumRewriteIntervalMilliseconds
+        guard floor > 0 else { return 0 }
+        guard let measured = StatsStore.shared.latency(for: settings.backend.rawValue),
+              let median = measured.median,
+              measured.samples >= 20
+        else { return floor }
+        return max(floor, median)
     }
 
     /// Forces an immediate rewrite, ignoring the debounce (used when recording
@@ -261,7 +312,7 @@ final class RewriteService: ObservableObject {
 
     private func rewrite(transcript: String, force: Bool = false) async {
         // Nothing to do when this exact text is already in flight or already
-        // settled on screen. Below, this method cancels whatever is streaming,
+        // settled on screen. A forced pass below cancels whatever is streaming,
         // so coming through here again for the same words threw away a request
         // that was most of the way done and billed a replacement producing the
         // identical result -- and it was paid at the worst possible moment,
@@ -271,6 +322,24 @@ final class RewriteService: ObservableObject {
            status == .rewriting || settledTranscript == transcript {
             return
         }
+
+        // A request for older text is still in flight. Cancelling it here is
+        // what broke the hosted engines: a rewrite takes ~1.9 s on Bedrock and
+        // the pacing let a new one start every 1.5 s, so each request was
+        // killed a few hundred milliseconds before it would have landed and
+        // the output box stayed empty for the whole session -- silently, since
+        // a cancellation is not an error and never reaches the error bar.
+        //
+        // Let it finish instead. The words that arrived while it ran are not
+        // lost: `drainQueuedRewrite` sends them the moment it lands, so the
+        // next rewrite covers the whole transcript rather than this fragment
+        // of it. That makes progress independent of how slow the engine is,
+        // which is the property the throttle alone could never give.
+        //
+        // `force` still supersedes -- Run Now is an explicit press, and there
+        // the newest words matter more than the request in flight.
+        if !force, status == .rewriting { return }
+
         rewriteCount += 1
         let backend: RewriteBackend
         switch makeBackend() {
@@ -280,7 +349,10 @@ final class RewriteService: ObservableObject {
             return
         }
 
-        // Supersede any rewrite still in flight: its transcript is now stale.
+        // Only reached with nothing in flight, or on a forced pass -- an
+        // automatic one returned above rather than cancel. So this either does
+        // nothing, or is Run Now deliberately dropping a request whose
+        // transcript the user has already moved past.
         streamTask?.cancel()
         lastRequestedTranscript = transcript
         lastRequestStartedAt = Date()
@@ -343,6 +415,9 @@ final class RewriteService: ObservableObject {
                 // indicator can clear unless more speech has arrived since.
                 self.settledTranscript = transcript
                 self.status = .idle
+                // Anything said while this was in flight never got a request
+                // of its own, because we no longer cancel to make room for it.
+                self.drainQueuedRewrite()
             } catch is CancellationError {
                 // Superseded by a newer transcript; not an error.
             } catch {
