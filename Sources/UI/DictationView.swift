@@ -399,17 +399,48 @@ struct DictationView: View {
                     if session.isInserting {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
                     } else {
-                        Text("Use")
+                        HStack(spacing: 5) {
+                            useStateGlyph
+                            Text("Use")
+                        }
                     }
                 }
                 // Keeps the button from resizing as the label swaps for the
-                // spinner.
-                .frame(minWidth: 26)
+                // spinner: wide enough for glyph + "Use".
+                .frame(minWidth: 42)
             }
+            // The pickers beside it are fixed-size, which left this as the one
+            // control the footer could squeeze when space ran short -- and it
+            // did, clipping the label to the glyph and a "U".
+            .fixedSize()
             .keyboardShortcut(.return, modifiers: .command)
-            .buttonStyle(.glassControlProminent)
+            // Grey while the rewriter is behind the transcript, blue once the
+            // text on screen accounts for everything said. Only a signal:
+            // Enter pastes whatever is on screen either way, so the user can
+            // always cut the wait short -- see `SessionController.useOutput`.
+            .buttonStyle(rewriter.isPending ? .glassControlWaiting : .glassControlProminent)
             .disabled(!session.canInsert || session.isInserting)
             .help(useHelpText)
+    }
+
+    /// Spinner while the rewriter is catching up, tick once it has. Both sit
+    /// in the same fixed slot so the word "Use" does not shuffle sideways as
+    /// one replaces the other.
+    private var useStateGlyph: some View {
+        ZStack {
+            if rewriter.isPending {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+                    // The stock spinner is drawn dark, which vanishes on the
+                    // grey fill. Dark scheme makes it white, like the label.
+                    .colorScheme(.dark)
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+        }
+        .frame(width: 12, height: 12)
     }
 
     /// Where the rewrite runs. Like the profile picker, changing it re-runs
@@ -476,9 +507,10 @@ struct DictationView: View {
     }
 
     private var useHelpText: String {
-        session.hasUserEdited
-            ? "Paste the rewritten text at the cursor (Cmd-Return)"
-            : "Paste the rewritten text at the cursor (Return)"
+        let key = session.hasUserEdited ? "Cmd-Return" : "Return"
+        return rewriter.isPending
+            ? "Still rewriting — paste what's on screen now anyway (\(key))"
+            : "Paste the rewritten text at the cursor (\(key))"
     }
 
     private var profileBinding: Binding<Profile.ID> {

@@ -8,8 +8,16 @@ import SwiftUI
 /// window or the text panes. Owning the style keeps one radius and one height
 /// across the whole control set.
 struct GlassControlStyle: ButtonStyle {
-    var tinted = false
+    /// Fill colour for a prominent button; nil is plain glass.
+    var tint: Color?
     @Environment(\.isEnabled) private var isEnabled
+
+    /// The Use button while the rewriter still owes it something: a request in
+    /// flight, or words heard since the last one landed. Grey rather than
+    /// disabled, because Enter works exactly the same either way -- this only
+    /// says whether what is on screen is the model's last word on the
+    /// transcript, or a version it is about to replace.
+    static let waitingTint = Color(white: 0.42)
 
     /// One radius for every rounded surface in the panel -- window, text
     /// panes, buttons and dropdowns -- so nothing reads as a different family.
@@ -23,16 +31,23 @@ struct GlassControlStyle: ButtonStyle {
             .padding(.horizontal, 14)
             .frame(height: Self.height)
             .glassEffect(
-                tinted ? .regular.tint(.accentColor) : .regular,
+                glass,
                 in: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
             )
             .opacity(opacity(pressed: configuration.isPressed))
             .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            // Blue <-> grey as the rewriter catches up, without a flash.
+            .animation(.easeInOut(duration: 0.25), value: tint)
+    }
+
+    private var glass: Glass {
+        guard let tint else { return .regular }
+        return .regular.tint(tint)
     }
 
     private var foreground: Color {
-        tinted ? .white : .primary
+        tint == nil ? .primary : .white
     }
 
     private func opacity(pressed: Bool) -> Double {
@@ -43,5 +58,9 @@ struct GlassControlStyle: ButtonStyle {
 
 extension ButtonStyle where Self == GlassControlStyle {
     static var glassControl: GlassControlStyle { GlassControlStyle() }
-    static var glassControlProminent: GlassControlStyle { GlassControlStyle(tinted: true) }
+    static var glassControlProminent: GlassControlStyle { GlassControlStyle(tint: .accentColor) }
+    /// Prominent, but greyed: the action still works, the result is not final.
+    static var glassControlWaiting: GlassControlStyle {
+        GlassControlStyle(tint: GlassControlStyle.waitingTint)
+    }
 }
