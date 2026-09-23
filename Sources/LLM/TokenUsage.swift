@@ -27,10 +27,12 @@ struct ModelPricing {
     let inputPerMTok: Double
     let outputPerMTok: Double
 
-    /// Writing to the cache costs 1.25x input at the 5-minute TTL this app uses.
-    var cacheWritePerMTok: Double { inputPerMTok * 1.25 }
+    /// Writing to the cache costs 2x input at the 1-hour TTL `BedrockClient`
+    /// uses. Before that change it was the 5-minute TTL at 1.25x, so older
+    /// write totals are overstated by this rate; the token counts are exact.
+    var cacheWritePerMTok: Double { inputPerMTok * 2.0 }
     /// Reading from it costs about a tenth of input -- the whole point of
-    /// caching the ~1,750-token preamble.
+    /// caching the ~5,600-token preamble.
     var cacheReadPerMTok: Double { inputPerMTok * 0.1 }
 
     /// Matched on a substring so an inference-profile prefix or a region

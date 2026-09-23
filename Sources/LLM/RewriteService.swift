@@ -366,6 +366,7 @@ final class RewriteService: ObservableObject {
         if let vocabulary = settings.dictionaryPromptSection {
             system += "\n\n" + vocabulary
         }
+        system += "\n\n" + Self.crossCheckGuidance
         let user = buildUserMessage(transcript: transcript)
 
         streamTask = Task { [weak self] in
@@ -441,9 +442,8 @@ final class RewriteService: ObservableObject {
         </transcript>
         """)
 
-        // Other recognisers' readings of the same audio, when cross-checking is
-        // on. Placed after the transcript and clearly subordinate to it: these
-        // are evidence about individual words, not competing drafts.
+        // Other recognisers' readings of the same audio. Only the readings go
+        // here; how to use them is `crossCheckGuidance`, in the system prompt.
         let alternates = alternateTranscripts()
         if !alternates.isEmpty {
             log.info("""
@@ -456,31 +456,6 @@ final class RewriteService: ObservableObject {
             parts.append("""
             The same audio, as heard by a different speech recogniser:
             \(listed)
-
-            This is not a second draft to choose between, and not a vote. It is \
-            evidence about individual words, from a model that mishears \
-            different things than the one above, so the two disagreeing tells \
-            you where to look.
-
-            How to use it:
-            - Where both readings say the same word, there is nothing to decide.
-            - Where they differ, ask which one the sentence can actually \
-            support, and write that. This is how "comma" against "karma" \
-            against "carmin" gets settled: one recogniser reaches for a real \
-            word, the other for a different real word, and only the sentence \
-            says which sound was meant.
-            - When neither reading makes sense, the speaker probably said \
-            something neither model caught. Prefer the main transcript and \
-            leave it alone rather than inventing a third option.
-            - Take single words, never structure. Do not adopt the other \
-            transcript's phrasing, word order, sentence breaks, or any content \
-            that appears only there. The main transcript remains the record of \
-            what was said and in what order.
-            - Ignore its punctuation and capitalisation completely. That \
-            recogniser adds marks at pauses rather than at grammar and converts \
-            spoken punctuation words into symbols, so its formatting is noise \
-            here even when its words are right. Punctuate from the rules above, \
-            not from what it did.
             """)
         }
 
@@ -491,4 +466,43 @@ final class RewriteService: ObservableObject {
         parts.append("Rewrite the transcript. Output only the rewritten text.")
         return parts.joined(separator: "\n\n")
     }
+
+    /// How to use a second recogniser's reading, in the system prompt rather
+    /// than beside the reading itself.
+    ///
+    /// It is ~400 tokens that never change, and in the user message they were
+    /// billed at the full input rate on every rewrite -- most of each request's
+    /// uncached input. Up here they ride the prompt cache at a tenth of that.
+    /// Sent unconditionally, even before the cross-check has heard anything:
+    /// a system prompt that grew mid-session would miss the cache it had just
+    /// written.
+    static let crossCheckGuidance = """
+        The user message may also include the same audio as heard by a \
+        different speech recogniser, after the main transcript.
+
+        That is not a second draft to choose between, and not a vote. It is \
+        evidence about individual words, from a model that mishears \
+        different things than the main one, so the two disagreeing tells \
+        you where to look.
+
+        How to use it:
+        - Where both readings say the same word, there is nothing to decide.
+        - Where they differ, ask which one the sentence can actually \
+        support, and write that. This is how "comma" against "karma" \
+        against "carmin" gets settled: one recogniser reaches for a real \
+        word, the other for a different real word, and only the sentence \
+        says which sound was meant.
+        - When neither reading makes sense, the speaker probably said \
+        something neither model caught. Prefer the main transcript and \
+        leave it alone rather than inventing a third option.
+        - Take single words, never structure. Do not adopt the other \
+        transcript's phrasing, word order, sentence breaks, or any content \
+        that appears only there. The main transcript remains the record of \
+        what was said and in what order.
+        - Ignore its punctuation and capitalisation completely. That \
+        recogniser adds marks at pauses rather than at grammar and converts \
+        spoken punctuation words into symbols, so its formatting is noise \
+        here even when its words are right. Punctuate from the rules above, \
+        not from what it did.
+        """
 }
