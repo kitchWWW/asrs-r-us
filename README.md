@@ -117,7 +117,7 @@ pill at the bottom of the panel.
 | Engine | Setup | Notes |
 |---|---|---|
 | **Local (llama.cpp)** *(default)* | `brew install llama.cpp` | Qwen2.5-7B by default. Free, private, no network. The app spawns and supervises `llama-server` itself. |
-| **Claude on Bedrock** | AWS CLI authenticated for a named profile | Sonnet 5 by default. Best quality; the ~5,600-token preamble is cached for an hour, so it is also cheap. |
+| **Claude on Bedrock** | AWS CLI authenticated for a named profile | Sonnet 5 by default, or Haiku 4.5 (faster, less accurate) — both are in the panel's engine menu. Best quality on Sonnet; the ~5,600-token preamble is cached for an hour, so it is also cheap. |
 | **Apple Intelligence** | Enable Apple Intelligence in System Settings | On-device, zero install, no API key. Requires supported hardware. |
 | **Anthropic API** | An API key, pasted into Settings | Goes into your login keychain; `$ANTHROPIC_API_KEY` is a fallback. |
 

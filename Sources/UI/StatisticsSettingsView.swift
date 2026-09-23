@@ -588,8 +588,13 @@ struct StatisticsSettingsView: View {
         return value >= 1000 ? String(format: "%.1fs", Double(value) / 1000) : "\(value)ms"
     }
 
+    /// "bedrock" is Sonnet 5 -- see `RewriteService.latencyKey`.
     private static func engineName(_ raw: String) -> String {
-        RewriteBackendKind(rawValue: raw)?.displayName ?? raw
+        if raw == RewriteBackendKind.bedrock.rawValue { return "Bedrock · Sonnet 5" }
+        if raw.hasPrefix("bedrock|") {
+            return "Bedrock · " + EngineChoice.shortModel(String(raw.dropFirst("bedrock|".count)))
+        }
+        return RewriteBackendKind(rawValue: raw)?.displayName ?? raw
     }
 
     private static func color(for outcome: SessionLog.Outcome) -> Color {

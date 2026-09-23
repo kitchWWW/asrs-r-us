@@ -110,7 +110,15 @@ struct SettingsView: View {
 
             if settings.backend == .bedrock {
             Section("Amazon Bedrock") {
-                TextField("Model", text: $settings.bedrockModelID)
+                Picker("Model", selection: $settings.bedrockModelID) {
+                    Text("Claude Sonnet 5").tag(EngineChoice.bedrockSonnet)
+                    Text("Claude Haiku 4.5 (faster)").tag(EngineChoice.bedrockHaiku)
+                    if settings.bedrockModelID != EngineChoice.bedrockSonnet,
+                       settings.bedrockModelID != EngineChoice.bedrockHaiku {
+                        Text("Custom").tag(settings.bedrockModelID)
+                    }
+                }
+                TextField("Model ID", text: $settings.bedrockModelID)
                     .textFieldStyle(.roundedBorder)
                 TextField("Region", text: $settings.bedrockRegion)
                     .textFieldStyle(.roundedBorder)
