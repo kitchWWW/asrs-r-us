@@ -216,6 +216,8 @@ struct DictationView: View {
                 // volatile tail changes on its own between finalizations.
                 .onChange(of: dictation.finalizedText) { scrollTranscriptToBottom(proxy) }
                 .onChange(of: dictation.volatileText) { scrollTranscriptToBottom(proxy) }
+                .onChange(of: dictation.shownFinalizedText) { scrollTranscriptToBottom(proxy) }
+                .onChange(of: dictation.shownVolatileText) { scrollTranscriptToBottom(proxy) }
             }
         }
     }
@@ -230,12 +232,19 @@ struct DictationView: View {
 
     /// Finalized text reads normally; the volatile tail is dimmed so it is
     /// obvious which words the recognizer may still revise.
+    ///
+    /// Shows the cross-check recogniser's reading, falling back to the record's
+    /// until the cross-check has said anything -- it can fail to start, and a
+    /// restored session from before it was kept has none.
     private var attributedTranscript: AttributedString {
-        var result = AttributedString(dictation.finalizedText)
+        let useShown = !dictation.shownFinalizedText.isEmpty || !dictation.shownVolatileText.isEmpty
+        let finalized = useShown ? dictation.shownFinalizedText : dictation.finalizedText
+        let volatile = useShown ? dictation.shownVolatileText : dictation.volatileText
+        var result = AttributedString(finalized)
         result.foregroundColor = .primary
-        if !dictation.volatileText.isEmpty {
+        if !volatile.isEmpty {
             var volatilePart = AttributedString(
-                (dictation.finalizedText.isEmpty ? "" : " ") + dictation.volatileText
+                (finalized.isEmpty ? "" : " ") + volatile
             )
             // Highlighted rather than greyed: dimming the newest words makes the
             // part you are actively speaking the hardest part to read.

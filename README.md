@@ -79,17 +79,20 @@ step can touch the network, and with the local engine it doesn't.
 Two recognisers run on every dictation, and there is no setting — the pair was
 chosen by measurement.
 
-**NVIDIA cache-aware streaming FastConformer** is the transcript. It has no
-punctuation head, so it physically cannot convert a spoken "colon" into a `:`
-or invent a comma at a pause; it writes down words and nothing else. It runs in
+**NVIDIA cache-aware streaming FastConformer** is the transcript the rewrite
+works from. It has no punctuation head, so it physically cannot convert a
+spoken "colon" into a `:` or invent a comma at a pause; it writes down words
+and nothing else. It runs in
 a sidecar process (`Sidecar/asr_server.py`) because the app is signed with the
 hardened runtime, and linking ONNX Runtime in-process would mean signing
 third-party dylibs or disabling library validation.
 
-**Apple's SpeechTranscriber** runs alongside it and is never shown. It reaches
-the rewrite model as a second reading of the same audio, used only to settle
-words the transcript gets wrong. The two mishear different things — one writes
-"comma", the other "karma" or "carmin" — and that disagreement is the signal.
+**Apple's SpeechTranscriber** runs alongside it, and its reading is what the
+panel's top box shows. It reaches the rewrite model only as a second reading of
+the same audio, used to settle words the transcript gets wrong; **Use
+transcript** and the session log still take FastConformer's text. The two
+mishear different things — one writes "comma", the other "karma" or "carmin" —
+and that disagreement is the signal.
 
 Measured over 28 recordings from the session log:
 
