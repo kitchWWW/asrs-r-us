@@ -8,8 +8,9 @@ import os
 /// mistakes: the same second of audio comes back as "comma" from one, "karma"
 /// from another and "colin" from a third, and three readings that differ tell
 /// the rewrite model far more than one confident wrong one. Only the primary
-/// is shown in the panel -- the rest ride along as evidence, reaching the model
-/// through the prompt.
+/// drives the rewrite -- the rest ride along as evidence, reaching the model
+/// through the prompt. Which one the panel *shows* is a separate, cosmetic
+/// choice made by `DictationEngine` through `onAlternateResult`.
 ///
 /// **This does not touch the audio device.** There is still exactly one
 /// `AVAudioEngine`, one read of `inputNode`, one tap, and one device
@@ -30,8 +31,12 @@ final class FanOutRecognizerBackend: RecognizerBackend {
     private let log = Logger(subsystem: "com.brianellis.ASRs-R-US", category: "recognizer.fanout")
 
     /// Latest text from each secondary, by recogniser. Read when a rewrite is
-    /// assembled; never shown in the panel.
+    /// assembled.
     private(set) var alternates: [RecognizerChoice: String] = [:]
+
+    /// Every secondary result as it arrives, for display only. Set before
+    /// `start`. Nothing that feeds the rewrite reads it.
+    var onAlternateResult: ((RecognizerChoice, RecognizerResult) -> Void)?
 
     var inputFormat: AVAudioFormat? { primary.inputFormat }
 
@@ -72,6 +77,7 @@ final class FanOutRecognizerBackend: RecognizerBackend {
             do {
                 try await backend.start { [weak self] result in
                     self?.alternates[choice] = result.text
+                    self?.onAlternateResult?(choice, result)
                 }
             } catch {
                 log.error("""

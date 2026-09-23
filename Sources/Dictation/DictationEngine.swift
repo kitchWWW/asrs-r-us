@@ -41,6 +41,12 @@ final class DictationEngine: ObservableObject {
     /// Rolling window of recent levels, oldest first, for the waveform display.
     @Published private(set) var levelHistory: [Double] = Array(repeating: 0, count: waveformSampleCount)
 
+    /// The cross-check recogniser's reading, split the same way, for the
+    /// panel's transcript box only. Purely cosmetic: `transcript`, the rewrite,
+    /// Use transcript and the session log all stay on the record recogniser.
+    @Published private(set) var shownFinalizedText: String = ""
+    @Published private(set) var shownVolatileText: String = ""
+
     var transcript: String {
         volatileText.isEmpty
             ? finalizedText
@@ -193,6 +199,8 @@ final class DictationEngine: ObservableObject {
         carriedAlternates = [:]
         finalizedText = ""
         volatileText = ""
+        shownFinalizedText = ""
+        shownVolatileText = ""
         if case .failed = state { state = .idle }
     }
 
@@ -212,6 +220,8 @@ final class DictationEngine: ObservableObject {
             alternates.map { ($0.name, $0.text) },
             uniquingKeysWith: { first, _ in first }
         )
+        shownFinalizedText = carriedAlternates[RecognizerChoice.crossCheck.shortName] ?? ""
+        shownVolatileText = ""
     }
 
     // MARK: - Permissions
@@ -231,8 +241,9 @@ final class DictationEngine: ObservableObject {
     private func configurePipeline() async throws {
         // Both recognisers, every session. There is no setting: the pair was
         // chosen by measurement and there is nothing left to pick between.
-        // Only the record's text reaches the panel; the cross-check's reaches
-        // the rewrite prompt as evidence about individual words.
+        // The record's text drives the rewrite; the cross-check's reaches the
+        // rewrite prompt as evidence about individual words. The panel shows the
+        // cross-check's -- a display choice only, see `showCrossCheck`.
         func make(_ choice: RecognizerChoice) -> any RecognizerBackend {
             choice.isSidecar
                 ? SocketRecognizerBackend(choice: choice, manager: serverManager)
@@ -245,6 +256,10 @@ final class DictationEngine: ObservableObject {
             secondaries: [(.crossCheck, make(.crossCheck))]
         )
         alternateSource = fanOut
+        fanOut.onAlternateResult = { [weak self] choice, result in
+            guard choice == .crossCheck else { return }
+            self?.showCrossCheck(text: result.text, isFinal: result.isFinal)
+        }
         let backend: any RecognizerBackend = fanOut
         self.backend = backend
 
@@ -287,6 +302,26 @@ final class DictationEngine: ObservableObject {
             volatileText = whole
         }
         onTranscriptChange?(transcript, isFinal)
+    }
+
+    /// `handle(text:isFinal:)` for the cross-check's reading, minus everything
+    /// downstream: it only updates what the transcript box shows. The prefix
+    /// from earlier start/stop cycles is the one `alternateTranscripts` uses.
+    private func showCrossCheck(text: String, isFinal: Bool) {
+        let piece = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let carried = carriedAlternates[RecognizerChoice.crossCheck.shortName] ?? ""
+        let whole = carried.isEmpty
+            ? piece
+            : (piece.isEmpty ? carried : carried + " " + piece)
+
+        if isFinal {
+            shownFinalizedText = whole
+            shownVolatileText = ""
+        } else {
+            guard !piece.isEmpty else { return }
+            shownFinalizedText = ""
+            shownVolatileText = whole
+        }
     }
 
     // MARK: - Audio

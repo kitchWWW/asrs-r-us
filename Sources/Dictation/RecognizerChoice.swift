@@ -18,10 +18,10 @@ import Foundation
 /// the one thing this app cannot have.
 enum RecognizerChoice: String, CaseIterable, Identifiable, Codable {
     /// NVIDIA cache-aware streaming FastConformer, in the sidecar. Bare
-    /// lowercase words, no punctuation, no digits. Fills the panel.
+    /// lowercase words, no punctuation, no digits. Drives the rewrite.
     case nemo
     /// Apple's `SpeechTranscriber`, in process. Punctuates and capitalises on
-    /// its own. Never shown; consulted only where a word looks wrong.
+    /// its own. Shown in the panel's transcript box, but reaches the rewrite only as a cross-check where a word looks wrong.
     case punctuated
 
     var id: String { rawValue }
