@@ -463,7 +463,7 @@ struct DictationView: View {
                         Text(choice.name)
                         Text(choice.detail).font(.caption)
                     }
-                    .tag(choice.backend)
+                    .tag(choice.id)
                 }
             }
             .labelsHidden()
@@ -483,10 +483,13 @@ struct DictationView: View {
         .help("Where the rewrite runs")
     }
 
-    private var engineBinding: Binding<RewriteBackendKind> {
+    private var engineBinding: Binding<String> {
         Binding(
-            get: { session.settings.backend },
-            set: { session.switchBackend(to: $0) }
+            get: { EngineChoice.current(settings: session.settings).id },
+            set: { id in
+                guard let choice = EngineChoice.catalog.first(where: { $0.id == id }) else { return }
+                session.switchEngine(to: choice)
+            }
         )
     }
 

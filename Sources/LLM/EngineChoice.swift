@@ -2,12 +2,12 @@ import Foundation
 
 /// One selectable rewrite engine for the dictation panel.
 ///
-/// Deliberately coarse: the choice on offer is *where the rewrite happens* --
-/// on this Mac, through Apple Intelligence, or through a hosted Claude -- not
-/// which specific model within each. Picking the exact Bedrock inference
-/// profile or llama.cpp repo stays in Settings, where there is room to explain
-/// the trade-off; putting it in the panel would turn a two-second decision into
-/// a menu of near-identical strings.
+/// Mostly coarse: the choice on offer is *where the rewrite happens* -- on
+/// this Mac, through Apple Intelligence, or through a hosted Claude -- not
+/// which specific model within each. The exception is Bedrock, which offers
+/// Sonnet 5 and Haiku 4.5 side by side so the two can be alternated from the
+/// panel and compared on real dictation. Any other model ID still goes in
+/// Settings.
 struct EngineChoice: Identifiable, Hashable {
     let id: String
     /// Short label for the pill.
@@ -15,6 +15,11 @@ struct EngineChoice: Identifiable, Hashable {
     /// Second line in the menu.
     let detail: String
     let backend: RewriteBackendKind
+    /// The Bedrock model this entry selects; nil for engines with one entry.
+    var bedrockModelID: String? = nil
+
+    static let bedrockSonnet = "us.anthropic.claude-sonnet-5"
+    static let bedrockHaiku = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     static let catalog: [EngineChoice] = [
         EngineChoice(id: "local", name: "Local",
@@ -23,9 +28,12 @@ struct EngineChoice: Identifiable, Hashable {
         EngineChoice(id: "apple", name: "Apple",
                      detail: "On-device Apple Intelligence",
                      backend: .appleIntelligence),
-        EngineChoice(id: "bedrock", name: "Bedrock",
-                     detail: "Claude via Amazon Bedrock",
-                     backend: .bedrock),
+        EngineChoice(id: "bedrock", name: "Sonnet 5",
+                     detail: "Claude via Amazon Bedrock · best quality",
+                     backend: .bedrock, bedrockModelID: bedrockSonnet),
+        EngineChoice(id: "bedrock-haiku", name: "Haiku 4.5",
+                     detail: "Claude via Amazon Bedrock · faster, cheaper",
+                     backend: .bedrock, bedrockModelID: bedrockHaiku),
         EngineChoice(id: "anthropic", name: "Anthropic",
                      detail: "Claude via the Anthropic API",
                      backend: .anthropic),
@@ -33,7 +41,12 @@ struct EngineChoice: Identifiable, Hashable {
 
     @MainActor
     static func current(settings: AppSettings) -> EngineChoice {
-        catalog.first { $0.backend == settings.backend } ?? catalog[0]
+        // A Bedrock model typed into Settings matches neither entry; it still
+        // reads as Bedrock, and the pill names the model it is really using.
+        catalog.first {
+            $0.backend == settings.backend
+                && ($0.bedrockModelID == nil || $0.bedrockModelID == settings.bedrockModelID)
+        } ?? catalog.first { $0.backend == settings.backend } ?? catalog[0]
     }
 
     /// What the pill shows: the engine, plus the model when that is the thing

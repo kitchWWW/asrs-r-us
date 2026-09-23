@@ -477,7 +477,13 @@ final class SessionController: ObservableObject {
                 resumedFrom: resumedFrom,
                 profile: profiles.active.name,
                 backend: settings.backend.rawValue,
-                model: settings.backend == .local ? settings.localModelRepo : settings.model,
+                model: {
+                    switch settings.backend {
+                    case .local:   return settings.localModelRepo
+                    case .bedrock: return settings.bedrockModelID
+                    default:       return settings.model
+                    }
+                }(),
                 rewriteCount: rewriter.rewriteCount,
                 recordingSeconds: Date().timeIntervalSince(sessionStartedAt),
                 targetBundleID: targetApp?.bundleIdentifier,
@@ -526,6 +532,25 @@ final class SessionController: ObservableObject {
         // The server is started by the `settings.$backend` observer in `init`,
         // which also covers the Settings picker.
         rewriter.flush(transcript: dictation.transcript)
+    }
+
+    /// A panel engine entry: the backend, plus the Bedrock model when the entry
+    /// names one. Like any switch, it re-runs the rewrite on what is on screen,
+    /// which is what makes alternating Sonnet and Haiku a real comparison.
+    func switchEngine(to choice: EngineChoice) {
+        if let model = choice.bedrockModelID, model != settings.bedrockModelID {
+            settings.bedrockModelID = model
+            if settings.backend == choice.backend {
+                lastError = nil
+                lastUserEdit = nil
+                // Forced: the text on screen is usually already settled, and an
+                // unforced flush treats that as nothing to do -- so the other
+                // model would never get a turn at it.
+                rewriter.flush(transcript: dictation.transcript, force: true)
+                return
+            }
+        }
+        switchBackend(to: choice.backend)
     }
 
     /// Changing profile mid-session re-rewrites what has been said so far,

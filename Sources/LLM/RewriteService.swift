@@ -251,11 +251,23 @@ final class RewriteService: ObservableObject {
     private func minimumRewriteInterval() -> Int {
         let floor = settings.backend.minimumRewriteIntervalMilliseconds
         guard floor > 0 else { return 0 }
-        guard let measured = StatsStore.shared.latency(for: settings.backend.rawValue),
+        guard let measured = StatsStore.shared.latency(for: latencyKey),
               let median = measured.median,
               measured.samples >= 20
         else { return floor }
         return max(floor, median)
+    }
+
+    /// What latency is recorded and looked up under. Per backend, except that a
+    /// Bedrock model other than Sonnet 5 gets its own key: Haiku and Sonnet
+    /// are the two being compared, so their timings must not blend. Sonnet
+    /// keeps the plain "bedrock" key because every Bedrock rewrite timed
+    /// before this was Sonnet 5.
+    private var latencyKey: String {
+        guard settings.backend == .bedrock,
+              settings.bedrockModelID != EngineChoice.bedrockSonnet
+        else { return settings.backend.rawValue }
+        return "bedrock|" + settings.bedrockModelID
     }
 
     /// Forces an immediate rewrite, ignoring the debounce (used when recording
@@ -392,7 +404,7 @@ final class RewriteService: ObservableObject {
                 // abandoned mid-stream, so its duration measures how fast the
                 // user kept talking, not how fast the engine is.
                 StatsStore.shared.recordLatency(
-                    engine: self.settings.backend.rawValue,
+                    engine: self.latencyKey,
                     firstTokenMS: firstChunkAt.map { Int($0.timeIntervalSince(startedAt) * 1000) },
                     totalMS: Int(Date().timeIntervalSince(startedAt) * 1000)
                 )
