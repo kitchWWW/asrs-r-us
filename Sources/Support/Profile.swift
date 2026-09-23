@@ -221,7 +221,12 @@ final class ProfileStore: ObservableObject {
     /// needing every superseded revision kept around forever.
     private static func upgradingLegacyPrompts(in profiles: [Profile]) -> [Profile] {
         profiles.map { profile in
-            guard let marker = profile.prompt.range(of: baseTailMarker) else { return profile }
+            // Newest marker first: a current prompt still contains the older
+            // tail mid-paragraph, and splitting there would append the newer
+            // closing sentences again on every launch.
+            guard let marker = baseTailMarkers.lazy
+                .compactMap({ profile.prompt.range(of: $0) }).first
+            else { return profile }
             let styleSection = String(profile.prompt[marker.upperBound...])
             let refreshed = basePrompt + styleSection
             guard refreshed != profile.prompt else { return profile }
@@ -250,13 +255,21 @@ final class ProfileStore: ObservableObject {
 
     // MARK: - Prompt templates
 
-    /// The last line of every base prompt, whichever family it belongs to.
+    /// The last line of every base prompt, whichever family it belongs to,
+    /// newest first.
     ///
     /// `upgradingLegacyPrompts` splits on this rather than on an exact copy of
     /// a previous version, so prompt fixes reach existing profiles without
     /// every superseded revision having to be kept around forever. All three
     /// families end on it, which is what lets one marker serve them all.
-    private static let baseTailMarker = "no quotation marks around the whole thing."
+    ///
+    /// Changing the base prompt's final sentence means adding the new one at
+    /// the front and keeping the old: prompts stored before the change still
+    /// end on the old one, and are found by it exactly once.
+    private static let baseTailMarkers = [
+        "output is pasted verbatim at the user's cursor.",
+        "no quotation marks around the whole thing.",
+    ]
 
     /// The rewriting rules every profile starts from.
     ///
@@ -443,7 +456,10 @@ final class ProfileStore: ObservableObject {
     corrections and honor them in this and all later rewrites.
 
     Output only the cleaned-up text. No preamble, no commentary, no code fences, \
-    no quotation marks around the whole thing.
+    no quotation marks around the whole thing. Give exactly one version of it: \
+    never append second thoughts, reasoning about a word ("Wait, let me \
+    reconsider…", "Actually, …"), or a revised draft after it. Everything you \
+    output is pasted verbatim at the user's cursor.
     """
     }
 
