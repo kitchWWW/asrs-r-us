@@ -8,14 +8,21 @@ import Foundation
 /// tokens and the panel already renders a whole snapshot at a time, exactly as
 /// it does for Apple Intelligence.
 ///
-/// The system prompt is marked for caching -- roughly 1,800 tokens of rulebook
-/// and vocabulary that never changes between rewrites, against ~100 tokens of
-/// actual transcript, resent every time the user pauses.
+/// The system prompt is marked for caching -- about 5,600 tokens of rulebook
+/// and vocabulary (6,800 with Personal, measured on Sonnet 5) that never change
+/// between rewrites, against ~100 tokens of actual transcript, resent every
+/// time the user pauses.
 ///
-/// Measured caveat: this is a no-op on Haiku 4.5, which reports zero cache
-/// reads on Bedrock no matter how long the prompt is, while Opus 5 caches the
-/// identical request. The marking is kept because it costs nothing and starts
-/// working the moment the model setting is pointed at one that supports it.
+/// The cache lives an hour, not the default five minutes. Replaying every
+/// Bedrock session in the log, 23% of dictations start more than five minutes
+/// after the last one and paid a full write; an hour turns most of those into
+/// reads. The write costs 2x input instead of 1.25x, and the replay says that
+/// still comes out ahead -- modestly: 7% of cache spend over the whole log,
+/// 4% at the pace since mid-September.
+///
+/// A model only caches a prefix above its minimum -- 1,024 tokens on Sonnet 5,
+/// 4,096 on Haiku 4.5, which is why Haiku once reported zero cache reads here:
+/// the prompt was shorter then.
 struct BedrockClient: RewriteBackend {
 
     enum ClientError: LocalizedError {
@@ -64,7 +71,7 @@ struct BedrockClient: RewriteBackend {
             "system": [[
                 "type": "text",
                 "text": system,
-                "cache_control": ["type": "ephemeral"],
+                "cache_control": ["type": "ephemeral", "ttl": "1h"],
             ]],
             "messages": [["role": "user", "content": user]],
         ]

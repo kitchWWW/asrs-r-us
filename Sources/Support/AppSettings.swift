@@ -334,11 +334,12 @@ final class AppSettings: ObservableObject {
             Key.audioMaxMegabytes: 5120,
             Key.audioEvictionPolicy: AudioEvictionPolicy.timeDiverse.rawValue,
             Key.recognizerServerPort: 8765,
-            // Sonnet 5 rather than Haiku 4.5 for one measured reason: Haiku is the
-            // only Claude on Bedrock that ignores `cache_control`. With the ~1,750
-            // token preamble cached, Sonnet 5 costs about 40% less per month than
-            // Haiku does uncached, and the adjudicator scores it the only engine
-            // with zero content errors across the nine cases.
+            // Sonnet 5 rather than Haiku 4.5, measured when the preamble was ~1,750
+            // tokens: that is under Haiku's 4,096-token caching minimum, so Haiku
+            // ran uncached, and a cached Sonnet 5 cost about 40% less per month
+            // -- and the adjudicator scored Sonnet 5 the only engine with zero
+            // content errors across the nine cases. The preamble is now ~5,600
+            // tokens, which Haiku would cache, so the cost half of this has moved.
             Key.bedrockModelID: "us.anthropic.claude-sonnet-5",
             Key.bedrockRegion: "us-east-1",
             Key.awsProfile: "personal",
