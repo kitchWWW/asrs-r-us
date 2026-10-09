@@ -323,7 +323,9 @@ final class AppSettings: ObservableObject {
             // smaller model silently drops. ~540 ms median, which the debounce
             // absorbs.
             Key.localModelRepo: "bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
-            Key.localPort: 8080,
+            // Deliberately obscure: 8080 is a common dev-server port, and
+            // squatting on it breaks whatever else wants it.
+            Key.localPort: 47613,
             Key.llamaServerPath: "",
             Key.inputDeviceUID: "",
             Key.dictionary: "",

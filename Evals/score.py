@@ -87,7 +87,7 @@ def user_turn(transcript):
 
 # --- engines ------------------------------------------------------------------
 
-def run_local(system, text, port=8080):
+def run_local(system, text, port=47613):
     body = {
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user_turn(text)}],
