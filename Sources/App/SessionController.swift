@@ -339,7 +339,7 @@ final class SessionController: ObservableObject {
     func useOutput() async -> Bool {
         let rewritten = rewriter.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard rewritten.isEmpty else { return await use(rewriter.output) }
-        return await use(dictation.transcript, outcome: .usedTranscriptNoRewrite)
+        return await use(dictation.shownTranscript, outcome: .usedTranscriptNoRewrite)
     }
 
     /// Escape hatch: insert the raw transcript instead of the rewrite, for when
@@ -350,15 +350,18 @@ final class SessionController: ObservableObject {
     /// and rejected it, with an empty box they gave up waiting for one. Only a
     /// completely empty box counts as waiting; a rewrite that is still
     /// streaming is a rewrite the user could see and judge.
+    ///
+    /// Pastes the reading the transcript box is showing, not the record
+    /// recogniser's: the button is labelled for what the user can see.
     func useTranscript() async -> Bool {
         await use(
-            dictation.transcript,
+            dictation.shownTranscript,
             outcome: canInsert ? .usedTranscript : .usedTranscriptNoRewrite
         )
     }
 
     var canInsertTranscript: Bool {
-        !dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !dictation.shownTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func use(_ candidate: String, outcome: SessionLog.Outcome = .used) async -> Bool {

@@ -53,6 +53,19 @@ final class DictationEngine: ObservableObject {
             : (finalizedText.isEmpty ? volatileText : finalizedText + " " + volatileText)
     }
 
+    /// What the panel's transcript box is showing, joined the same way as
+    /// `transcript`: the cross-check's reading, or the record's until the
+    /// cross-check has said anything. This is what Use transcript pastes, so
+    /// the button inserts the words the user is looking at.
+    var shownTranscript: String {
+        let useShown = !shownFinalizedText.isEmpty || !shownVolatileText.isEmpty
+        let finalized = useShown ? shownFinalizedText : finalizedText
+        let volatile = useShown ? shownVolatileText : volatileText
+        return volatile.isEmpty
+            ? finalized
+            : (finalized.isEmpty ? volatile : finalized + " " + volatile)
+    }
+
     var isRecording: Bool { state == .recording }
 
     /// Called on every transcript change so callers can kick off a rewrite.
