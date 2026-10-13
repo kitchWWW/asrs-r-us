@@ -516,5 +516,9 @@ final class RewriteService: ObservableObject {
         spoken punctuation words into symbols, so its formatting is noise \
         here even when its words are right. Punctuate from the rules above, \
         not from what it did.
+        - Ignore how it writes numbers, too. It turns spoken numbers into \
+        digits wholesale, counts included; whether a number becomes words \
+        or figures is decided by the number rules above, not by its \
+        reading.
         """
 }

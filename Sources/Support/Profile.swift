@@ -227,7 +227,10 @@ final class ProfileStore: ObservableObject {
             guard let marker = baseTailMarkers.lazy
                 .compactMap({ profile.prompt.range(of: $0) }).first
             else { return profile }
+            // The one style-section rule that has been rewritten rather than
+            // added to; a plain swap, so it is a no-op once done.
             let styleSection = String(profile.prompt[marker.upperBound...])
+                .replacingOccurrences(of: legacyPersonalNumbersNote, with: personalNumbersNote)
             let refreshed = basePrompt + styleSection
             guard refreshed != profile.prompt else { return profile }
 
@@ -251,6 +254,31 @@ final class ProfileStore: ObservableObject {
     only a "Carmin" wedged between two complete clauses, where no one is being
     addressed or described, is a comma. Her name is spelled Carmin, never
     Carmen or carmine.
+    """
+
+    /// The Personal profile's number rule.
+    ///
+    /// Its own constant for the same reason as `carminNote`: it is seeded into
+    /// new profiles and swapped into existing ones by a migration, since
+    /// `upgradingLegacyPrompts` only ever refreshes the base prompt and leaves
+    /// a stored style section exactly as it was.
+    static let personalNumbersNote = """
+    - Numbers follow the rule further up, texting included: a quantity below
+    twelve is spelled out ("three", "we need nine bags"), and a date, time, or
+    version number is written in figures ("3pm", "August 2nd", "iOS 26"). His
+    texts use digits for small counts about four to one, but he has asked for
+    words.
+    """
+
+    /// The bullet `personalNumbersNote` replaced, matched verbatim so a stored
+    /// Personal prompt still carrying it is moved onto the new rule. One that
+    /// was hand-edited no longer matches and is left alone.
+    private static let legacyPersonalNumbersNote = """
+    - Numbers go the other way: write them as digits. This deliberately
+    overrides the rule further up about spelling out numbers below twelve --
+    that one is for written prose, and in texting he uses digits over
+    spelled-out numbers about four to one. So "3" not "three", "2nd" not
+    "second". Dates and times stay as figures, as they do everywhere.
     """
 
     // MARK: - Prompt templates
@@ -386,11 +414,23 @@ final class ProfileStore: ObservableObject {
     are describing punctuation rather than dictating it: the words stay, and \
     no mark is added.
 
-    Numbers, dates, and times:
-    - Prefer words for numbers below twelve: "three" rather than "3", "first" \
-    rather than "1st". Twelve and above stay as figures.
-    - Dates and times are the exception, and are written the way they would be \
-    typed: "three pm" is "3pm", "August second" is "August 2nd".
+    Numbers, dates, and times: the question is whether a number counts \
+    something or labels something.
+    - A number used as a quantity -- how many or how much of something -- is \
+    spelled out in words below twelve: "we need nine bags", "two of them", \
+    never "9 bags" or "2 of them". Twelve and above stay as figures: "about \
+    40 people", "300 rows".
+    - A date, a time, or a version number is written in figures, the way it \
+    would be typed: "three pm" is "3pm", "August second" is "August 2nd", \
+    "twenty twenty six" as a year is "2026", "version two point one" is \
+    "version 2.1", "iOS twenty six" is "iOS 26".
+    - A percentage is always figures with the sign, whatever its size: \
+    "five percent" is "5%", "twenty five percent" is "25%".
+    - The same goes for other numbers that name something rather than count \
+    it -- a phone number, a street address, a room, flight, or ticket number: \
+    figures.
+    - When one number could be read either way, ask whether the speaker is \
+    saying how many. "Two of the builds" is a count; "build two" is a label.
 
     Emails, letters, and messages: dictation runs the whole thing together as \
     one block, so when the transcript opens by addressing someone ("hi Sarah", \
@@ -560,12 +600,10 @@ final class ProfileStore: ObservableObject {
     /// with a capital 98% of the time, capitalize a standalone "I" 99.7% of the
     /// time, and use curly apostrophes 95% of the time -- but all three are the
     /// iOS keyboard rather than the writer: autocapitalization and smart
-    /// punctuation, not choices. One rule here also deliberately contradicts
-    /// the base prompt: the base spells out numbers below twelve, which Brian
-    /// asked for and meant for written prose, while his texting runs four to
-    /// one the other way -- so this section overrides it in as many words,
-    /// rather than leaving the model to reconcile two rules that disagree.
-    /// Brian does not capitalize a message himself, so a
+    /// punctuation, not choices. Numbers are a fourth: his texting uses digits
+    /// for small counts about four to one, but he asked for them in words
+    /// everywhere, so `personalNumbersNote` restates the base rule rather than
+    /// overriding it. Brian does not capitalize a message himself, so a
     /// statistic that measures the keyboard is not evidence about him. Prefer
     /// his account of his own habits over the corpus wherever the corpus is
     /// really describing autocorrect. See the note above for why this is a
@@ -592,11 +630,7 @@ final class ProfileStore: ObservableObject {
     - Spell words out in full: "you", "your", "tomorrow", "really", "sorry",
     "thank you". Never substitute "u", "ur", "tmrw", "ty".
     \(carminNote)
-    - Numbers go the other way: write them as digits. This deliberately
-    overrides the rule further up about spelling out numbers below twelve --
-    that one is for written prose, and in texting he uses digits over
-    spelled-out numbers about four to one. So "3" not "three", "2nd" not
-    "second". Dates and times stay as figures, as they do everywhere.
+    \(personalNumbersNote)
     - Never introduce shorthand he does not use. Not one of these appears
     anywhere in nine thousand of his messages: lmk, tbh, ngl, imo, btw, np, ty,
     yw, omw, wyd, hbu, fr, smh, lmao, nah, yup, okay, ur, cuz. The only
