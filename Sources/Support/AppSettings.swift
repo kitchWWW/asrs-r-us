@@ -17,6 +17,7 @@ final class AppSettings: ObservableObject {
         static let restorePasteboard = "restorePasteboard"
         static let insertionMethod = "insertionMethod"
         static let backend = "rewriteBackend"
+        static let rewriteMode = "rewriteMode"
         static let localModelRepo = "localModelRepo"
         static let localPort = "localPort"
         static let llamaServerPath = "llamaServerPath"
@@ -100,6 +101,12 @@ final class AppSettings: ObservableObject {
     }
 
     /// Hugging Face GGUF repo passed to `llama-server -hf`.
+    /// Whether the rewrite runs on its own as the transcript grows, or only
+    /// when Run is pressed. See `RewriteMode`.
+    @Published var rewriteMode: RewriteMode {
+        didSet { defaults.set(rewriteMode.rawValue, forKey: Key.rewriteMode) }
+    }
+
     @Published var localModelRepo: String {
         didSet { defaults.set(localModelRepo, forKey: Key.localModelRepo) }
     }
@@ -360,6 +367,9 @@ final class AppSettings: ObservableObject {
             rawValue: defaults.string(forKey: Key.backend) ?? ""
         ) ?? .local
         backend = resolvedBackend
+        rewriteMode = RewriteMode(
+            rawValue: defaults.string(forKey: Key.rewriteMode) ?? ""
+        ) ?? .auto
 
         // A pre-existing single debounce is carried onto the engine that was
         // selected when it was set -- that is the engine it was tuned against.
@@ -403,4 +413,30 @@ final class AppSettings: ObservableObject {
     }
 
     var hasAPIKey: Bool { !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+}
+
+/// When the rewriter is allowed to run.
+///
+/// `auto` rewrites continuously as the transcript grows. `off` never calls the
+/// model on its own: the transcript box's reading is written straight into the
+/// rewritten box, and only Run sends it to the model.
+enum RewriteMode: String, CaseIterable, Identifiable {
+    case auto
+    case off
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .auto: return "Auto"
+        case .off:  return "Off"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto: return "Rewrite continuously as you speak"
+        case .off:  return "Show the transcript; rewrite only on Run"
+        }
+    }
 }

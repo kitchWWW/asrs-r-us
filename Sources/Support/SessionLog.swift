@@ -69,6 +69,10 @@ final class SessionLog {
         var backend: String
         var model: String
         var rewriteCount: Int
+        /// `RewriteMode` the session ended in. With rewrites off, `rewrite` is
+        /// empty until Run has been pressed: the box held the transcript, not
+        /// anything the model wrote. Optional so older records still decode.
+        var rewriteMode: String?
         var recordingSeconds: Double
         var targetBundleID: String?
         var inputDevice: String?

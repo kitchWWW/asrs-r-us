@@ -6,6 +6,8 @@ struct DictationView: View {
     @ObservedObject private var dictation: DictationEngine
     @ObservedObject private var rewriter: RewriteService
     @ObservedObject private var deviceStore = AudioDeviceStore.shared
+    /// Observed so the Auto / Off pill relabels the moment it is switched.
+    @ObservedObject private var settings = AppSettings.shared
 
     private var escapeAction: (() -> Void)?
     private var useAction: (() async -> Void)?
@@ -390,6 +392,7 @@ struct DictationView: View {
 
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
+                    rewriteModePicker
                     enginePicker
                     profilePicker
                     useButton
@@ -481,6 +484,42 @@ struct DictationView: View {
             in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
         )
         .help("Where the rewrite runs")
+    }
+
+    /// Auto rewrites as you speak; Off leaves the transcript in the rewritten
+    /// box and waits for Run.
+    private var rewriteModePicker: some View {
+        Menu {
+            Picker("Rewrite", selection: rewriteModeBinding) {
+                ForEach(RewriteMode.allCases) { mode in
+                    VStack(alignment: .leading) {
+                        Text(mode.name)
+                        Text(mode.detail).font(.caption)
+                    }
+                    .tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.inline)
+        } label: {
+            pillLabel(settings.rewriteMode.name)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.horizontal, 14)
+        .frame(height: GlassControlStyle.height)
+        .glassEffect(
+            .regular,
+            in: RoundedRectangle(cornerRadius: GlassControlStyle.cornerRadius, style: .continuous)
+        )
+        .help("Rewrite automatically, or only when Run is pressed")
+    }
+
+    private var rewriteModeBinding: Binding<RewriteMode> {
+        Binding(
+            get: { settings.rewriteMode },
+            set: { session.switchRewriteMode(to: $0) }
+        )
     }
 
     private var engineBinding: Binding<String> {

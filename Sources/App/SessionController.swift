@@ -67,7 +67,23 @@ final class SessionController: ObservableObject {
     init() {
         startRecognizerServer()
         dictation.onTranscriptChange = { [weak self] transcript, isFinal in
-            self?.rewriter.transcriptChanged(transcript, isFinal: isFinal)
+            guard let self, self.rewritesAreAuto else { return }
+            self.rewriter.transcriptChanged(transcript, isFinal: isFinal)
+        }
+        // With rewrites off, the rewritten box follows the transcript box.
+        // Deferred a turn: `@Published` emits before the value is stored, so
+        // reading `shownTranscript` synchronously would see the previous text.
+        Publishers.Merge4(
+            dictation.$finalizedText,
+            dictation.$volatileText,
+            dictation.$shownFinalizedText,
+            dictation.$shownVolatileText
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in self?.syncMirror() }
+        .store(in: &cancellables)
+        rewriter.onRewriteCompleted = { [weak self] rewritten in
+            self?.runRewriteLanded(rewritten)
         }
         rewriter.alternateTranscripts = { [weak self] in
             self?.dictation.alternateTranscripts ?? []
@@ -131,6 +147,7 @@ final class SessionController: ObservableObject {
         dictation.reset()
         rewriter.reset()
         editTracker.reset()
+        resetMirror()
         Task { await dictation.start() }
     }
 
@@ -189,6 +206,14 @@ final class SessionController: ObservableObject {
         // keystroke reads as "the user inserted <the entire text>" -- which
         // then goes into the next prompt as a binding correction.
         editTracker.setBaseline(entry.restoredRewrite)
+        // With rewrites off, the restored text is kept as it was and new
+        // speech is appended after it. Without a restored rewrite there is
+        // nothing to keep, so the box shows the whole transcript instead.
+        if entry.restoredRewrite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            resetMirror()
+        } else {
+            resetMirror(keeping: entry.restoredRewrite, after: dictation.shownTranscript)
+        }
 
         await dictation.start()
     }
@@ -229,6 +254,7 @@ final class SessionController: ObservableObject {
             dictation.reset()
             rewriter.reset()
             editTracker.reset()
+            resetMirror()
             lastUserEdit = nil
             hasUserEdited = false
             lastError = nil
@@ -258,7 +284,9 @@ final class SessionController: ObservableObject {
     func stopRecording() async {
         await dictation.stop()
         // One final pass so the tail of the dictation gets polished even if the
-        // debounce window never elapsed.
+        // debounce window never elapsed. With rewrites off, only Run calls the
+        // model.
+        guard rewritesAreAuto else { return }
         rewriter.flush(transcript: dictation.transcript)
     }
 
@@ -294,6 +322,10 @@ final class SessionController: ObservableObject {
         if wasRecording { await dictation.stop() }
 
         let frozen = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Where the rewrite's coverage ends in the transcript box's reading.
+        // Only adopted once the rewrite lands -- if it fails, the box keeps
+        // following the transcript from where it was.
+        pendingRunAnchor = dictation.shownTranscript
         if !frozen.isEmpty {
             // Supersedes whatever is in flight or still waiting out the
             // debounce; `flush` cancels both. Forced, because this is an
@@ -321,6 +353,116 @@ final class SessionController: ObservableObject {
         hasUserEdited = true
         rewriter.output = text
         editTracker.record(edited: text)
+        // With rewrites off, what the user typed is kept verbatim and only
+        // speech that arrives from here on is appended after it.
+        resetMirror(keeping: text, after: dictation.shownTranscript)
+        scheduleMirrorResync()
+    }
+
+    // MARK: - Rewrites off
+
+    private var rewritesAreAuto: Bool { settings.rewriteMode == .auto }
+
+    /// With rewrites off, the rewritten box is `mirrorPrefix` followed by
+    /// whatever the transcript box has gained since it read `mirrorAnchor`.
+    ///
+    /// The prefix is text the box must not lose: the user's edits, or the
+    /// rewrite Run produced. Re-deriving the box from the prefix every time,
+    /// rather than appending to it, is what lets the recogniser keep revising
+    /// its volatile tail without leaving stale guesses behind.
+    private var mirrorPrefix = ""
+    private var mirrorAnchor = ""
+    /// The anchor for a Run rewrite still in flight; see `runRewriteNow`.
+    private var pendingRunAnchor = ""
+    private var mirrorResync: Task<Void, Never>?
+
+    private func resetMirror(keeping prefix: String = "", after anchor: String = "") {
+        mirrorPrefix = prefix
+        mirrorAnchor = anchor
+    }
+
+    /// Rewrites the box from the prefix and the transcript's new words.
+    ///
+    /// Holds off while a Run rewrite is streaming, so its result is not
+    /// clobbered, and while the user is typing: writing the editor resets its
+    /// insertion point. `scheduleMirrorResync` catches up after the latter.
+    private func syncMirror() {
+        guard !rewritesAreAuto,
+              rewriter.status != .rewriting,
+              !rewriter.isUserEditing()
+        else { return }
+
+        let shown = dictation.shownTranscript
+        // The anchor is normally a prefix of the transcript. When the
+        // recogniser has since revised a word inside it, fall back to its
+        // length so the box still moves forward.
+        let tail = shown.hasPrefix(mirrorAnchor)
+            ? shown.dropFirst(mirrorAnchor.count)
+            : shown.dropFirst(min(mirrorAnchor.count, shown.count))
+        let said = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let text: String
+        if said.isEmpty {
+            text = mirrorPrefix
+        } else if mirrorPrefix.isEmpty || mirrorPrefix.last?.isWhitespace == true {
+            text = mirrorPrefix + said
+        } else {
+            text = mirrorPrefix + " " + said
+        }
+        guard text != rewriter.output else { return }
+        rewriter.output = text
+        // Words the transcript added are not the user's edits.
+        editTracker.setBaseline(text)
+    }
+
+    /// Speech that arrived during the typing grace period was held back; this
+    /// brings it in once the grace period is over, even if nothing more is
+    /// said to trigger it.
+    private func scheduleMirrorResync() {
+        mirrorResync?.cancel()
+        guard !rewritesAreAuto else { return }
+        let delay = UInt64((userEditGrace + 0.1) * 1_000_000_000)
+        mirrorResync = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            self?.syncMirror()
+        }
+    }
+
+    /// A Run rewrite that made it onto the screen becomes the new prefix, and
+    /// anything said while it ran is appended after it.
+    private func runRewriteLanded(_ rewritten: String) {
+        guard !rewritesAreAuto, rewriter.output == rewritten else { return }
+        resetMirror(keeping: rewritten, after: pendingRunAnchor)
+        // Called before the rewriter marks itself idle, which `syncMirror`
+        // waits for, so let that happen first.
+        Task { [weak self] in self?.syncMirror() }
+    }
+
+    /// The panel's Auto / Off menu.
+    ///
+    /// Turning rewrites off keeps whatever the box holds and appends new
+    /// speech after it. Turning them on rewrites what has been said so far,
+    /// like an engine switch, so the box catches up immediately.
+    func switchRewriteMode(to mode: RewriteMode) {
+        guard mode != settings.rewriteMode else { return }
+        settings.rewriteMode = mode
+        lastUserEdit = nil
+        switch mode {
+        case .off:
+            rewriter.cancel()
+            let current = rewriter.output
+            if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                resetMirror()
+            } else {
+                resetMirror(keeping: current, after: dictation.shownTranscript)
+            }
+            syncMirror()
+        case .auto:
+            mirrorResync?.cancel()
+            lastError = nil
+            rewriter.flush(transcript: dictation.transcript, force: true)
+        }
     }
 
     // MARK: - Insertion
@@ -338,7 +480,14 @@ final class SessionController: ObservableObject {
     /// how often the model never got a word in.
     func useOutput() async -> Bool {
         let rewritten = rewriter.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard rewritten.isEmpty else { return await use(rewriter.output) }
+        guard rewritten.isEmpty else {
+            // With rewrites off and Run never pressed, the box holds the
+            // transcript (perhaps hand-edited), not a rewrite.
+            let outcome: SessionLog.Outcome = !rewritesAreAuto && rewriter.rewriteCount == 0
+                ? .usedTranscriptNoRewrite
+                : .used
+            return await use(rewriter.output, outcome: outcome)
+        }
         return await use(dictation.shownTranscript, outcome: .usedTranscriptNoRewrite)
     }
 
@@ -475,7 +624,7 @@ final class SessionController: ObservableObject {
                 // transcript. Kept as a field because the log format is append-only
                 // and older lines still carry a genuinely different value.
                 normalizedTranscript: transcript,
-                rewrite: rewriter.output,
+                rewrite: modelRewrite,
                 editedRewrite: hasUserEdited ? rewriter.output : nil,
                 resumedFrom: resumedFrom,
                 profile: profiles.active.name,
@@ -488,6 +637,7 @@ final class SessionController: ObservableObject {
                     }
                 }(),
                 rewriteCount: rewriter.rewriteCount,
+                rewriteMode: settings.rewriteMode.rawValue,
                 recordingSeconds: Date().timeIntervalSince(sessionStartedAt),
                 targetBundleID: targetApp?.bundleIdentifier,
                 inputDevice: dictation.activeInputDeviceName,
@@ -507,7 +657,7 @@ final class SessionController: ObservableObject {
         stats.record(
             date: sessionStartedAt,
             transcript: transcript,
-            rewrite: rewriter.output,
+            rewrite: modelRewrite,
             outcome: outcome,
             profile: profiles.active.name,
             engine: settings.backend.rawValue,
@@ -524,6 +674,13 @@ final class SessionController: ObservableObject {
         }
     }
 
+    /// What the model produced, for the log and statistics. With rewrites off
+    /// and Run never pressed the box holds the transcript, which must not be
+    /// recorded as the model's output.
+    private var modelRewrite: String {
+        !rewritesAreAuto && rewriter.rewriteCount == 0 ? "" : rewriter.output
+    }
+
     /// Changing engine mid-session re-rewrites what has been said so far, so
     /// the new engine's version replaces the old one on screen instead of the
     /// change only showing up in whatever is dictated next.
@@ -533,7 +690,9 @@ final class SessionController: ObservableObject {
         lastError = nil
         lastUserEdit = nil
         // The server is started by the `settings.$backend` observer in `init`,
-        // which also covers the Settings picker.
+        // which also covers the Settings picker. With rewrites off, the new
+        // engine waits for Run.
+        guard rewritesAreAuto else { return }
         rewriter.flush(transcript: dictation.transcript)
     }
 
@@ -546,6 +705,7 @@ final class SessionController: ObservableObject {
             if settings.backend == choice.backend {
                 lastError = nil
                 lastUserEdit = nil
+                guard rewritesAreAuto else { return }
                 // Forced: the text on screen is usually already settled, and an
                 // unforced flush treats that as nothing to do -- so the other
                 // model would never get a turn at it.
@@ -566,7 +726,7 @@ final class SessionController: ObservableObject {
         // drop the typing grace period that would otherwise suppress it.
         lastUserEdit = nil
         let text = dictation.transcript
-        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if rewritesAreAuto, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             rewriter.flush(transcript: text)
         }
     }
